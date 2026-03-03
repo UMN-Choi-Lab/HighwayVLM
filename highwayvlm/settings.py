@@ -56,7 +56,7 @@ def get_min_vlm_interval_seconds():
     return int(
         os.getenv(
             "MIN_VLM_INTERVAL_SECONDS",
-            os.getenv("VLM_FORCE_INTERVAL_SECONDS", "300"),
+            os.getenv("VLM_FORCE_INTERVAL_SECONDS", "30"),
         )
     )
 
@@ -79,7 +79,7 @@ def get_vlm_max_tokens():
 
 
 def get_vlm_max_calls_per_run():
-    return int(os.getenv("VLM_MAX_CALLS_PER_RUN", "1"))
+    return int(os.getenv("VLM_MAX_CALLS_PER_RUN", "0"))
 
 
 def get_vlm_error_cooldown_seconds():

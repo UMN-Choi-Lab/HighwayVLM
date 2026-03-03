@@ -28,7 +28,10 @@ def _utc_now():
 def _latest_snapshot(camera_id):
     if not FRAMES_DIR.exists():
         return None
-    candidates = list(FRAMES_DIR.glob(f"{camera_id}_*"))
+    candidates = [
+        path for path in FRAMES_DIR.rglob(f"{camera_id}_*")
+        if path.is_file()
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
@@ -50,6 +53,15 @@ def _guess_content_type(path):
     if suffix == ".gif":
         return "image/gif"
     return "image/jpeg"
+
+
+def _normalize_image_path(path):
+    if not path:
+        return None
+    try:
+        return str(path.relative_to(FRAMES_DIR))
+    except ValueError:
+        return str(path)
 
 
 def _write_raw_output(camera_id, captured_at, model, text, parsed):
@@ -101,7 +113,7 @@ def run_once():
                 "incidents_json": json.dumps([i.model_dump() for i in result.incidents], ensure_ascii=True),
                 "notes": result.notes,
                 "overall_confidence": result.overall_confidence,
-                "image_path": str(image_path),
+                "image_path": _normalize_image_path(image_path),
                 "vlm_model": model,
                 "raw_response": text,
             }

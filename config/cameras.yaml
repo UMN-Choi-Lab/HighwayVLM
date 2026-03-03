@@ -1,5 +1,5 @@
 # Camera configuration using MnDOT snapshot endpoints.
-# Each snapshot is polled every 10 seconds but processed only once per unique frame.
+# Each active camera is polled on a 30-second cadence.
 
 # I-94 Hudson Rd WB @ 4th St
 - camera_id: "C30248"
@@ -7,7 +7,7 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30248"
   corridor: "I-94"
   direction: "WB"
-  poll_interval_sec: 10
+  poll_interval_sec: 30
 
 # I-94 Hudson Rd WB @ 19th St
 - camera_id: "C30250"
@@ -15,7 +15,7 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30250"
   corridor: "I-94"
   direction: "WB"
-  poll_interval_sec: 10
+  poll_interval_sec: 30
 
 # I-94 EB @ T.H.120 (Century Ave)
 - camera_id: "C860"
@@ -23,15 +23,15 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C860"
   corridor: "I-94"
   direction: "EB"
-  poll_interval_sec: 10
+  poll_interval_sec: 30
 
 # I-94 WB east of T.H.120
-- camera_id: "C30251"
-  name: "I-94: WB east of T.H.120"
-  snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30251"
-  corridor: "I-94"
-  direction: "WB"
-  poll_interval_sec: 10
+# - camera_id: "C30251"
+#   name: "I-94: WB east of T.H.120"
+#   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30251"
+#   corridor: "I-94"
+#   direction: "WB"
+#   poll_interval_sec: 10
 
 # I-94 WB @ Ideal Ave N
 - camera_id: "C30285"
@@ -39,7 +39,7 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30285"
   corridor: "I-94"
   direction: "WB"
-  poll_interval_sec: 10
+  poll_interval_sec: 30
 
 # # I-94 EB @ Heggen St
 # - camera_id: "C870"

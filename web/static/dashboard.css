@@ -413,6 +413,26 @@ body::before {
   font-size: 18px;
 }
 
+.stat small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.source-status.source-ok {
+  color: #7fe5ff;
+}
+
+.source-status.source-warn {
+  color: #ffc587;
+}
+
+.source-status.source-error {
+  color: #ff9e9e;
+}
+
 .incidents-list {
   list-style: none;
   padding: 0;

@@ -38,8 +38,13 @@ const formatType = (value) =>
 
 const frameUrl = (imagePath) => {
   if (!imagePath) return null;
-  const filename = encodeURIComponent(imagePath.split(/[\\/]/).pop());
-  return `/frames/${filename}`;
+  const normalized = imagePath
+    .toString()
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return normalized ? `/frames/${normalized}` : null;
 };
 
 const selectedCameraId = () => (cameraFilter?.value || "").trim();

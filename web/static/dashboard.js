@@ -1,4 +1,4 @@
-const REFRESH_SECONDS = 10;
+const REFRESH_SECONDS = 30;
 
 const grid = document.getElementById("camera-grid");
 const lastUpdated = document.getElementById("last-updated");
@@ -27,6 +27,17 @@ const titleCase = (value) =>
         .replace(/_/g, " ")
         .replace(/\b\w/g, (match) => match.toUpperCase())
     : "Unknown";
+
+const frameUrlFromPath = (imagePath) => {
+  if (!imagePath) return null;
+  const normalized = imagePath
+    .toString()
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return normalized ? `/frames/${normalized}` : null;
+};
 
 const withCacheBust = (url, token) => {
   if (!url) return url;
@@ -95,6 +106,68 @@ const resolveNotes = (analysis, latest, fallback) => {
   return fallback;
 };
 
+const summarizeError = (value) => {
+  if (!value) return "Unknown error";
+  const text = value.toString().replace(/^snapshot_failed:\s*/i, "").replace(/^vlm_failed:\s*/i, "");
+  if (text.includes("504")) {
+    return "Upstream camera source returned 504.";
+  }
+  if (text.includes("Failed to resolve") || text.includes("NameResolutionError")) {
+    return "Snapshot host could not be resolved.";
+  }
+  return text.length > 96 ? `${text.slice(0, 93)}...` : text;
+};
+
+const summarizeSkip = (value) => {
+  const normalized = (value || "").toString().trim().toLowerCase();
+  if (!normalized) return "No recent skip reason.";
+  const labels = {
+    unchanged_frame: "Frame unchanged; analysis skipped.",
+    vlm_min_interval: "Frame captured; analysis waiting for minimum interval.",
+    vlm_error_cooldown: "Frame captured; analysis waiting for error cooldown.",
+    vlm_max_calls_per_run: "Frame captured; analysis deferred by per-run limit.",
+    vlm_quota_exceeded: "Frame captured; analysis blocked by model quota.",
+    empty_snapshot: "Snapshot source returned an empty response.",
+  };
+  return labels[normalized] || `${titleCase(normalized)}.`;
+};
+
+const buildFeedStatus = (latest) => {
+  if (latest?.error) {
+    return {
+      label: "Error",
+      className: "source-error",
+      detail: summarizeError(latest.error),
+    };
+  }
+  if (latest?.captured_at && latest?.skipped_reason) {
+    return {
+      label: "Captured",
+      className: "source-warn",
+      detail: summarizeSkip(latest.skipped_reason),
+    };
+  }
+  if (latest?.captured_at) {
+    return {
+      label: "Live",
+      className: "source-ok",
+      detail: "Snapshot source reachable.",
+    };
+  }
+  if (latest?.skipped_reason) {
+    return {
+      label: "Waiting",
+      className: "source-warn",
+      detail: summarizeSkip(latest.skipped_reason),
+    };
+  }
+  return {
+    label: "Waiting",
+    className: "source-warn",
+    detail: "No snapshot captured yet.",
+  };
+};
+
 const buildSummaryText = (trafficLabel, incidents, isUnknown) => {
   if (!incidents.length) {
     return isUnknown
@@ -114,10 +187,14 @@ const buildSummaryText = (trafficLabel, incidents, isUnknown) => {
 
 const updateCard = (node, summary) => {
   const updated = node.querySelector(".updated-at");
+  const polledAt = node.querySelector(".polled-at");
   const snapshot = node.querySelector(".snapshot");
   const img = node.querySelector(".snapshot-img");
   const link = node.querySelector(".snapshot-link");
+  const snapshotLabel = node.querySelector(".snapshot-label");
   const badge = node.querySelector(".badge");
+  const sourceStatus = node.querySelector(".source-status");
+  const sourceDetail = node.querySelector(".source-detail");
   const trafficState = node.querySelector(".traffic-state");
   const incidentsCount = node.querySelector(".incidents-count");
   const incidentsList = node.querySelector(".incidents-list");
@@ -127,17 +204,24 @@ const updateCard = (node, summary) => {
 
   const latest = summary?.latest_log;
   const analysis = summary?.analysis_log || latest;
-  updated.textContent = formatTime(latest?.created_at || analysis?.created_at);
+  const feedStatus = buildFeedStatus(latest);
+  if (polledAt) {
+    polledAt.textContent = formatTime(latest?.created_at);
+  }
+  updated.textContent = formatTime(analysis?.created_at);
+  if (sourceStatus) {
+    sourceStatus.textContent = feedStatus.label;
+    sourceStatus.className = `source-status ${feedStatus.className}`;
+  }
+  if (sourceDetail) {
+    sourceDetail.textContent = feedStatus.detail;
+  }
 
   const snapshotUrl = node.dataset.snapshotUrl;
   const framePath = latest?.image_path || analysis?.image_path;
-  let frameUrl = null;
-  if (framePath) {
-    const filename = encodeURIComponent(framePath.split(/[\\/]/).pop());
-    frameUrl = `/frames/${filename}`;
-  }
+  const frameUrl = frameUrlFromPath(framePath);
   const cacheToken = Date.now();
-  const primaryUrl = snapshotUrl ? withCacheBust(snapshotUrl, cacheToken) : null;
+  const primaryUrl = latest?.error ? null : (snapshotUrl ? withCacheBust(snapshotUrl, cacheToken) : null);
   const fallbackUrl = frameUrl ? withCacheBust(frameUrl, cacheToken) : null;
   const imageUrl = primaryUrl || fallbackUrl;
   if (imageUrl) {
@@ -150,12 +234,17 @@ const updateCard = (node, summary) => {
     snapshot.classList.remove("is-loaded");
   }
   if (link) {
-    const linkUrl = snapshotUrl || frameUrl;
+    const linkUrl = primaryUrl ? snapshotUrl : frameUrl;
     if (linkUrl) {
       link.href = linkUrl;
+      link.textContent = primaryUrl ? "Open live snapshot" : "Open stored frame";
     } else {
       link.removeAttribute("href");
+      link.textContent = "Snapshot unavailable";
     }
+  }
+  if (snapshotLabel) {
+    snapshotLabel.textContent = primaryUrl ? "Live snapshot" : "Stored fallback";
   }
 
   const rawTraffic = (analysis?.traffic_state || "").toString().trim().toLowerCase();
@@ -201,7 +290,11 @@ const updateCard = (node, summary) => {
   }
 
   if (summaryText) {
-    summaryText.textContent = buildSummaryText(trafficLabel, incidents, isUnknown);
+    if (latest?.error) {
+      summaryText.textContent = `Live snapshot unavailable. Showing the last analyzed frame. ${feedStatus.detail}`;
+    } else {
+      summaryText.textContent = buildSummaryText(trafficLabel, incidents, isUnknown);
+    }
   }
 };
 
