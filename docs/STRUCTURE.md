@@ -49,7 +49,6 @@
   - `source_url`
   - `corridor`
   - `direction`
-  - `poll_interval_sec`
 
 ### `highwayvlm/pipeline.py`
 

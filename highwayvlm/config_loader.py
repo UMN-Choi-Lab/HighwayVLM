@@ -21,6 +21,5 @@ def load_cameras(config_path=None):
             "source_url": str(entry.get("source_url", "")).strip(),
             "corridor": str(entry.get("corridor", "")).strip(),
             "direction": str(entry.get("direction", "")).strip(),
-            "poll_interval_sec": entry.get("poll_interval_sec"),
         })
     return cameras

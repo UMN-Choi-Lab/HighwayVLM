@@ -33,7 +33,6 @@ This document describes the current implementation, not the intended future desi
   - `source_url`
   - `corridor`
   - `direction`
-  - `poll_interval_sec`
 
 ### `highwayvlm/`
 
@@ -185,14 +184,13 @@ This state is not persisted across restarts.
 
 A camera is processed only if `_is_due()` says enough time passed since `last_polled_at`.
 
-Priority comes from:
+Polling is centralized in:
 
-- the camera's own `poll_interval_sec`
-- otherwise `RUN_INTERVAL_SECONDS`
+- `RUN_INTERVAL_SECONDS`
 
 Important nuance:
 
-- these values are target intervals, not hard real-time guarantees
+- this is a target interval, not a hard real-time guarantee
 - cameras are processed sequentially inside one loop
 - realized per-camera cadence becomes `loop work duration + sleep time`, so actual spacing can be slower than the configured interval
 

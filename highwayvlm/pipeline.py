@@ -47,15 +47,6 @@ class CameraState:
     last_error_at: datetime | None = None
 
 
-def _is_due(state, poll_interval_seconds):
-    if not poll_interval_seconds:
-        return True
-    if not state.last_polled_at:
-        return True
-    elapsed = (_utc_now() - state.last_polled_at).total_seconds()
-    return elapsed >= poll_interval_seconds
-
-
 def _write_raw_output(camera_id, captured_at, model, text, parsed):
     if not text:
         return None
@@ -101,9 +92,6 @@ def run_once(states, client):
     )
     for camera, state in camera_entries:
         camera_id = camera.get("camera_id")
-        poll_interval = camera.get("poll_interval_sec") or get_run_interval_seconds()
-        if not _is_due(state, poll_interval):
-            continue
         state.last_polled_at = _utc_now()
         base_log = {
             "created_at": _utc_iso(),

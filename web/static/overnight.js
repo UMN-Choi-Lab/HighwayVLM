@@ -94,29 +94,33 @@ const inWindow = (row) => {
   return date >= cutoffDate();
 };
 
-const renderStats = (rows) => {
+const renderStats = (groups) => {
   const cameraIds = new Set();
   const cameraIdsWithIncidents = new Set();
   let reports = 0;
+  let rowCount = 0;
 
-  rows.forEach((row) => {
-    if (row.camera_id) {
-      cameraIds.add(row.camera_id);
+  groups.forEach(({ cameraId, items }) => {
+    if (cameraId) {
+      cameraIds.add(cameraId);
     }
-    const incidentReports = Array.isArray(row.incident_reports) ? row.incident_reports : [];
-    reports += incidentReports.length;
-    if ((row.incident_count || 0) > 0) {
-      cameraIdsWithIncidents.add(row.camera_id);
-    }
+    rowCount += items.length;
+    items.forEach((row) => {
+      const incidentReports = Array.isArray(row.incident_reports) ? row.incident_reports : [];
+      reports += incidentReports.length;
+      if ((row.incident_count || 0) > 0) {
+        cameraIdsWithIncidents.add(row.camera_id);
+      }
+    });
   });
 
   cameraTotal.textContent = cameraIds.size.toString();
-  hourlyTotal.textContent = rows.length.toString();
+  hourlyTotal.textContent = rowCount.toString();
   reportTotal.textContent = reports.toString();
   cameraIncidentTotal.textContent = cameraIdsWithIncidents.size.toString();
 };
 
-const groupRows = (rows) => {
+const buildGroups = (rows) => {
   const groups = new Map();
   rows.forEach((row) => {
     const key = row.camera_id || "unknown";
@@ -132,15 +136,19 @@ const groupRows = (rows) => {
     .sort((a, b) => a.cameraId.localeCompare(b.cameraId));
 };
 
-const renderGroups = (rows) => {
+const shouldShowGroup = ({ items }) => {
+  const latest = items[0];
+  return (latest?.status || "").toLowerCase() !== "error";
+};
+
+const renderGroups = (groups) => {
   overnightList.innerHTML = "";
-  if (!rows.length) {
+  if (!groups.length) {
     emptyState.hidden = false;
     return;
   }
   emptyState.hidden = true;
 
-  const groups = groupRows(rows);
   groups.forEach(({ cameraId, items }) => {
     const first = items[0];
     const cameraName = first.camera_name || camerasById.get(cameraId)?.name || cameraId || "Unknown camera";
@@ -295,9 +303,10 @@ const refresh = async () => {
   const cameraQuery = cameraId ? `&camera_id=${encodeURIComponent(cameraId)}` : "";
   const hourly = await fetchJson(`/api/hourly?limit=720${cameraQuery}`);
   const rows = (Array.isArray(hourly) ? hourly : []).filter(inWindow);
+  const groups = buildGroups(rows).filter(shouldShowGroup);
 
-  renderStats(rows);
-  renderGroups(rows);
+  renderStats(groups);
+  renderGroups(groups);
 };
 
 const init = async () => {

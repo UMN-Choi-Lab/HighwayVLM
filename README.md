@@ -17,12 +17,14 @@ HighwayVLM is a FastAPI app that polls freeway camera snapshots, sends frames to
 ## What The App Does
 
 1. Loads camera definitions from `config/cameras.yaml`.
-2. Tries to poll each camera on its configured cadence.
+2. Polls all active cameras once per `RUN_INTERVAL_SECONDS`.
 3. Saves each frame under `data/frames/live/...`.
 4. Calls the VLM only when the current frame is eligible for analysis, then stores logs and any structured result.
 5. Serves dashboard, incident, hourly, and overnight views.
 
-Realized per-camera cadence can be slower than the configured interval because the worker processes cameras sequentially and then sleeps for `RUN_INTERVAL_SECONDS`.
+Camera polling is centralized in `RUN_INTERVAL_SECONDS`. The camera YAML only lists which cameras exist and where their snapshots come from.
+
+Realized per-camera cadence can still be slower than `RUN_INTERVAL_SECONDS` because the worker processes cameras sequentially and then sleeps for `RUN_INTERVAL_SECONDS`.
 
 ## Observed Overnight Run
 
@@ -135,4 +137,5 @@ HTML endpoints:
 - `docs/ARCHITECTURE.md`
 - `docs/STRUCTURE.md`
 - `docs/REPO_MAP.md`
+- `docs/QUICK_REFERENCE.md`
 - `docs/COST_ANALYSIS.md`

@@ -76,8 +76,7 @@ Camera object shape:
   "snapshot_url": "https://...",
   "source_url": "",
   "corridor": "I-94",
-  "direction": "WB",
-  "poll_interval_sec": 30
+  "direction": "WB"
 }
 ```
 

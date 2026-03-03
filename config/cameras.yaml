@@ -1,13 +1,14 @@
 # Camera configuration using MnDOT snapshot endpoints.
-# Each active camera is polled on a 30-second cadence.
+# The live app polls all active cameras once per RUN_INTERVAL_SECONDS.
 
-# I-94 Hudson Rd WB @ 4th St
-- camera_id: "C30248"
-  name: "I-94: Hudson Rd WB @ 4th St"
-  snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30248"
-  corridor: "I-94"
-  direction: "WB"
-  poll_interval_sec: 30
+#  I-94 Hudson Rd WB @ 4th St
+# - camera_id: "C30248"
+#   name: "I-94: Hudson Rd WB @ 4th St"
+#   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30248"
+#   corridor: "I-94"
+#   direction: "WB"
+
+  ## Camera is down 
 
 # I-94 Hudson Rd WB @ 19th St
 - camera_id: "C30250"
@@ -15,7 +16,6 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30250"
   corridor: "I-94"
   direction: "WB"
-  poll_interval_sec: 30
 
 # I-94 EB @ T.H.120 (Century Ave)
 - camera_id: "C860"
@@ -23,7 +23,6 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C860"
   corridor: "I-94"
   direction: "EB"
-  poll_interval_sec: 30
 
 # I-94 WB east of T.H.120
 # - camera_id: "C30251"
@@ -31,7 +30,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30251"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # I-94 WB @ Ideal Ave N
 - camera_id: "C30285"
@@ -39,15 +37,13 @@
   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30285"
   corridor: "I-94"
   direction: "WB"
-  poll_interval_sec: 30
 
-# # I-94 EB @ Heggen St
-# - camera_id: "C870"
-#   name: "I-94: EB @ Heggen St"
-#   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C870"
-#   corridor: "I-94"
-#   direction: "EB"
-#   poll_interval_sec: 10
+# I-94 EB @ Heggen St
+- camera_id: "C870"
+  name: "I-94: EB @ Heggen St"
+  snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C870"
+  corridor: "I-94"
+  direction: "EB"
 
 # # I-94 WB @ T.H.95 (St Croix Trl)
 # - camera_id: "C869"
@@ -55,7 +51,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C869"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 WB W of T.H.95 (St Croix Trl)
 # - camera_id: "C30289"
@@ -63,7 +58,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30289"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 WB @ Co Rd 21 (Stagecoach Trl)
 # - camera_id: "C868"
@@ -71,7 +65,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C868"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 EB W of Co Rd 21 (Stagecoach Trl)
 # - camera_id: "C30288"
@@ -79,7 +72,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30288"
 #   corridor: "I-94"
 #   direction: "EB"
-#   poll_interval_sec: 10
 
 # # I-94 WB @ St. Croix Rest Area
 # - camera_id: "C867"
@@ -87,7 +79,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C867"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 EB @ St. Croix Rest Area
 # - camera_id: "C30040"
@@ -95,7 +86,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30040"
 #   corridor: "I-94"
 #   direction: "EB"
-#   poll_interval_sec: 10
 
 # # I-94 EB E of Co Rd 71 (E of Neal Ave)
 # - camera_id: "C30287"
@@ -103,7 +93,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30287"
 #   corridor: "I-94"
 #   direction: "EB"
-#   poll_interval_sec: 10
 
 # # I-94 WB @ Co Rd 71 (Neal Ave)
 # - camera_id: "C866"
@@ -111,7 +100,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C866"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 WB @ Co Rd 17B (Lake Elmo Ave)
 # - camera_id: "C864"
@@ -119,7 +107,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C864"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 WB @ Co Rd 19 (Keats Ave/Woodbury Dr)
 # - camera_id: "C863"
@@ -127,7 +114,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C863"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 WB E of Radio Dr
 # - camera_id: "C30286"
@@ -135,7 +121,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30286"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
 
 # # I-94 EB @ Co Rd 13 (Inwood Ave/Radio Dr)
 # - camera_id: "C862"
@@ -143,7 +128,6 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C862"
 #   corridor: "I-94"
 #   direction: "EB"
-#   poll_interval_sec: 10
 
 # # Hudson Rd WB @ 8th St
 # - camera_id: "C30249"
@@ -151,4 +135,3 @@
 #   snapshot_url: "https://video.dot.state.mn.us/video/image/metro/C30249"
 #   corridor: "I-94"
 #   direction: "WB"
-#   poll_interval_sec: 10
