@@ -24,6 +24,7 @@
           <a href="/incidents">Incidents Archive</a>
           <a href="/hourly">Hourly Checks</a>
           <a href="/overnight">Overnight Monitor</a>
+          <a href="/debug">Debug</a>
         </div>
       </div>
       <div class="controls">
@@ -60,13 +61,14 @@
           <span class="badge unknown">Unknown</span>
         </header>
         <div class="snapshot">
+          <video class="snapshot-video" muted autoplay playsinline loop></video>
           <img class="snapshot-img" alt="Camera snapshot" loading="lazy" decoding="async" />
           <div class="snapshot-placeholder">
             <span>Snapshot preview</span>
             <small>Waiting for the latest image</small>
           </div>
           <div class="snapshot-overlay">
-            <span class="snapshot-label">Live snapshot</span>
+            <span class="snapshot-label">Live stream</span>
             <a class="snapshot-link" href="#" target="_blank" rel="noreferrer">Open snapshot</a>
           </div>
         </div>
@@ -113,6 +115,7 @@
       </article>
     </template>
 
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
     <script src="/static/dashboard.js"></script>
   </body>
 </html>

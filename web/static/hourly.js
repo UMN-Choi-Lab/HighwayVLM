@@ -247,6 +247,23 @@ const init = async () => {
   await refresh();
 };
 
+const clearBtn = document.getElementById("clear-btn");
+clearBtn?.addEventListener("click", async () => {
+  const camId = selectedCameraId();
+  const label = camId ? "hourly checks for this camera" : "ALL hourly checks";
+  if (!confirm("Delete " + label + "? This cannot be undone.")) return;
+  const params = new URLSearchParams();
+  if (camId) params.set("camera_id", camId);
+  try {
+    const resp = await fetch("/api/hourly/clear?" + params, { method: "POST" });
+    const data = await resp.json();
+    alert("Deleted " + (data.deleted || 0) + " hourly entries.");
+    refresh();
+  } catch (err) {
+    alert("Clear failed: " + err);
+  }
+});
+
 cameraFilter?.addEventListener("change", () => {
   initialCameraId = selectedCameraId();
   refresh();

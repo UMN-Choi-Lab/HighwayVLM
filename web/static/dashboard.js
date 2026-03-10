@@ -1,4 +1,5 @@
 const REFRESH_SECONDS = 30;
+const HLS_URL_TEMPLATE = "https://video.dot.state.mn.us/public/{camera_id}.stream/playlist.m3u8";
 
 const grid = document.getElementById("camera-grid");
 const lastUpdated = document.getElementById("last-updated");
@@ -90,6 +91,81 @@ const buildCard = (camera) => {
     }
     snapshot.classList.remove("is-loaded");
   });
+
+  // HLS video setup with auto-recovery + viewport gating
+  const video = node.querySelector(".snapshot-video");
+  const cameraIdRaw = camera.camera_id;
+  node._visible = false;
+  if (cameraIdRaw && typeof Hls !== "undefined") {
+    const hlsUrl = HLS_URL_TEMPLATE.replace("{camera_id}", cameraIdRaw);
+    if (Hls.isSupported()) {
+      const initHls = () => {
+        if (node._hls) {
+          node._hls.destroy();
+          node._hls = null;
+        }
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          liveSyncDurationCount: 3,
+          liveMaxLatencyDurationCount: 10,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          maxBufferHole: 0.5,
+          manifestLoadingMaxRetry: 10,
+          manifestLoadingRetryDelay: 3000,
+          manifestLoadingMaxRetryTimeout: 30000,
+          levelLoadingMaxRetry: 10,
+          levelLoadingRetryDelay: 3000,
+          levelLoadingMaxRetryTimeout: 30000,
+          fragLoadingMaxRetry: 10,
+          fragLoadingRetryDelay: 2000,
+          fragLoadingMaxRetryTimeout: 30000,
+        });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => {});
+          snapshot.classList.add("is-loaded", "has-video");
+        });
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (data.fatal) {
+            snapshot.classList.remove("has-video");
+            hls.destroy();
+            node._hls = null;
+            // Auto-recover after 10s, but only if still visible
+            setTimeout(() => {
+              if (node.isConnected && node._visible) initHls();
+            }, 10000);
+          }
+        });
+        node._hls = hls;
+      };
+      // Store init function; observer will call it when card enters viewport
+      node._hlsInit = initHls;
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      node._hlsInit = () => {
+        video.src = hlsUrl;
+        video.load();
+      };
+      video.addEventListener("loadeddata", () => {
+        snapshot.classList.add("is-loaded", "has-video");
+      });
+      video.addEventListener("error", () => {
+        snapshot.classList.remove("has-video");
+        setTimeout(() => {
+          if (node.isConnected && node._visible) {
+            video.src = "";
+            video.src = hlsUrl;
+            video.load();
+          }
+        }, 10000);
+      });
+    }
+    // Register with visibility observer (starts paused, plays when visible)
+    visibilityObserver.observe(node);
+  }
+
   return node;
 };
 
@@ -307,6 +383,40 @@ const loadSummary = async () => {
   const response = await fetch("/status/summary");
   return response.json();
 };
+
+// Intersection observer: only run HLS for visible cards
+const visibilityObserver = new IntersectionObserver(
+  (entries) => {
+    entries.forEach((entry) => {
+      const node = entry.target;
+      const video = node.querySelector(".snapshot-video");
+      const snapshot = node.querySelector(".snapshot");
+      if (!video) return;
+
+      if (entry.isIntersecting) {
+        // Resume: if HLS was torn down, rebuild it
+        if (!node._hls && node._hlsInit) {
+          node._hlsInit();
+        } else if (node._hls && video.paused) {
+          video.play().catch(() => {});
+        }
+        node._visible = true;
+      } else {
+        // Pause and tear down to free bandwidth
+        node._visible = false;
+        if (node._hls) {
+          node._hls.destroy();
+          node._hls = null;
+          snapshot.classList.remove("has-video");
+        }
+        if (!video.paused) {
+          video.pause();
+        }
+      }
+    });
+  },
+  { rootMargin: "200px" }
+);
 
 const ensureCards = (cameras) => {
   const existing = new Map();

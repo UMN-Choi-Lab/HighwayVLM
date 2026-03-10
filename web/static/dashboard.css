@@ -270,16 +270,19 @@ body::before {
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+.badge.smooth,
 .badge.free {
   color: #7fe5ff;
   background: rgba(56, 215, 255, 0.12);
 }
 
+.badge.slow,
 .badge.moderate {
   color: #ffc587;
   background: rgba(255, 154, 60, 0.16);
 }
 
+.badge.congested,
 .badge.heavy,
 .badge.stop_and_go {
   color: #ff9e9e;
@@ -308,15 +311,26 @@ body::before {
   border: 1px solid rgba(56, 215, 255, 0.2);
 }
 
+.snapshot-video,
 .snapshot-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   opacity: 0;
   transition: opacity 0.3s ease;
+  grid-area: 1 / 1;
 }
 
+.snapshot.is-loaded .snapshot-video,
 .snapshot.is-loaded .snapshot-img {
+  opacity: 1;
+}
+
+.snapshot.has-video .snapshot-img {
+  opacity: 0;
+}
+
+.snapshot.has-video .snapshot-video {
   opacity: 1;
 }
 

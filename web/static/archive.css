@@ -302,6 +302,41 @@ button {
   letter-spacing: 0.14em;
 }
 
+.false-alarm-btn {
+  background: rgba(255, 154, 60, 0.15);
+  color: #ffb16a;
+  border: 1px solid rgba(255, 154, 60, 0.3);
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.false-alarm-btn:hover {
+  background: rgba(255, 154, 60, 0.25);
+}
+
+.false-alarm-btn.is-false-alarm {
+  background: rgba(255, 90, 90, 0.2);
+  color: #ff9e9e;
+  border-color: rgba(255, 90, 90, 0.4);
+}
+
+.incident-card.false-alarm {
+  opacity: 0.55;
+}
+
+.incident-card.false-alarm .pill {
+  background: rgba(255, 90, 90, 0.15);
+  color: #ff9e9e;
+}
+
+.incident-card.false-alarm .pill::after {
+  content: " (false alarm)";
+}
+
 @media (max-width: 940px) {
   .page-head {
     grid-template-columns: 1fr;
