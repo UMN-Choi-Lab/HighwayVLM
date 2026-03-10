@@ -1,9 +1,10 @@
 ﻿import base64
 import json
-import re
 import time
 
-import requests
+import cv2
+import numpy as np
+import openai
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from highwayvlm.settings import (
@@ -15,10 +16,41 @@ from highwayvlm.settings import (
 )
 
 
+def _crop_incident_region(image_bytes, bbox, padding=0.25):
+    """Crop and enlarge the bbox region from an image.
+
+    bbox: [x1, y1, x2, y2] as fractions (0.0-1.0).
+    padding: fraction of bbox size to add around it.
+    Returns JPEG bytes of the cropped region, or None.
+    """
+    if not bbox or len(bbox) != 4:
+        return None
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw, bh = x2 - x1, y2 - y1
+    # Add padding
+    px1 = max(0.0, x1 - bw * padding)
+    py1 = max(0.0, y1 - bh * padding)
+    px2 = min(1.0, x2 + bw * padding)
+    py2 = min(1.0, y2 + bh * padding)
+
+    crop = img[int(py1 * h):int(py2 * h), int(px1 * w):int(px2 * w)]
+    if crop.size == 0:
+        return None
+
+    _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    return buf.tobytes()
+
 class Incident(BaseModel):
     type: str
     severity: str
     description: str
+    bbox: list[float] | None = None
 
     @field_validator("severity")
     @classmethod
@@ -27,6 +59,16 @@ class Incident(BaseModel):
         if value not in allowed:
             raise ValueError("severity must be low, medium, or high")
         return value
+
+    @field_validator("bbox")
+    @classmethod
+    def _validate_bbox(cls, value):
+        if value is None:
+            return None
+        if len(value) != 4:
+            return None
+        # Clamp to [0, 1] range
+        return [max(0.0, min(1.0, float(v))) for v in value]
 
 
 class VLMResult(BaseModel):
@@ -39,9 +81,9 @@ class VLMResult(BaseModel):
     @field_validator("traffic_state")
     @classmethod
     def _validate_traffic_state(cls, value):
-        allowed = {"free", "moderate", "heavy", "stop_and_go", "unknown"}
+        allowed = {"smooth", "slow", "congested", "unknown"}
         if value not in allowed:
-            raise ValueError("traffic_state must be free, moderate, heavy, stop_and_go, or unknown")
+            raise ValueError("traffic_state must be smooth, slow, congested, or unknown")
         return value
 
 
@@ -55,136 +97,43 @@ class VLMClient:
         self.api_key = api_key or get_vlm_api_key()
         if not self.api_key:
             raise ValueError("Missing VLM API key. Set OPENAI_API_KEY or VLM_API_KEY.")
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        self.client = openai.OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            max_retries=0,
+        )
 
     def _build_prompt(self, camera, captured_at):
         system = (
-            "You are an expert traffic incident detection system for freeway monitoring. Your goal is to identify "
-            "ALL potential incidents and traffic anomalies to alert human operators. "
-            "\n\n"
-            "CRITICAL CONTEXT:\n"
-            "- Camera resolution: ~480p (low quality, may be blurry or grainy)\n"
-            "- Better to report suspicious patterns than miss real incidents\n"
-            "- Human operators will review all alerts - false positives are acceptable\n"
-            "- When uncertain, report the incident with lower confidence rather than skipping\n"
+            "You are a freeway traffic incident detection system. Analyze camera images and respond with JSON only.\n"
             "\n"
-            
-            "DETECTION PRIORITIES (in order):\n"
-            "1. Crashes - any visible collision, damaged vehicles, or vehicles at unusual angles\n"
-            "2. Stopped vehicles in active lanes - major safety hazard\n"
-            "3. Vehicles on shoulders - especially with people visible outside\n"
-            "4. Traffic anomalies - unusual gaps, sudden slowdowns, visible brake lights\n"
-            "5. Debris or objects on roadway\n"
-            "6. Emergency vehicles or unusual vehicle presence\n"
+            "TRAFFIC STATES (based on vehicle count and spacing on the PRIMARY freeway lanes ONLY):\n"
+            "- smooth: few or no vehicles visible, open lanes, traffic flowing freely\n"
+            "- slow: noticeable traffic, vehicles moving at reduced speed, some congestion\n"
+            "- congested: dense traffic, vehicles closely spaced, stopped or barely moving\n"
+            "- unknown: cannot determine (e.g. obstructed view, night with no visible vehicles)\n"
             "\n"
-            "TRAFFIC STATE DEFINITIONS:\n"
-            "- free: Vehicles moving at normal highway speeds (50+ mph apparent), good spacing, no visible brake lights\n"
-            "- moderate: Some slowing visible, vehicles closer together, occasional brake lights, but steady flow\n"
-            "- heavy: Dense traffic, frequent brake lights, reduced speeds (20-40 mph apparent), but still moving\n"
-            "- stop_and_go: Vehicles stopping and starting, visible stationary traffic, red brake lights prevalent\n"
-            "- unknown: Only use when image quality prevents any traffic assessment (fog, night darkness, camera malfunction)\n"
+            "INCIDENT TYPES: crash, stopped_vehicle_lane, stalled_vehicle, debris, emergency_response, pedestrian, traffic_anomaly\n"
+            "SEVERITY: high (crashes, vehicles in lanes, pedestrians), medium (debris in lanes, lane closures), low (minor anomalies)\n"
             "\n"
-            "INCIDENT DETECTION GUIDANCE:\n"
-            "- Look for stationary vehicles (shadows underneath, no motion blur relative to moving traffic)\n"
-            "- Check shoulder areas for stopped vehicles or people\n"
-            "- Identify unusual vehicle positions (sideways, off-angle, blocking lanes)\n"
-            "- Note emergency lights, hazard flashers, or unusual vehicle lighting\n"
-            "- Watch for debris, tire marks, or objects in roadway\n"
-            "- Even in low resolution, crashes often show as: vehicle clusters, unusual angles, stopped traffic upstream\n"
+            "CRITICAL RULES:\n"
+            "- Focus ONLY on the PRIMARY freeway lanes (the main road this camera monitors). Ignore background roads, "
+            "cross streets, overpasses, ramps, and any traffic on other roadways.\n"
+            "- If the primary freeway lanes are empty or have very few vehicles, traffic_state MUST be \"smooth\" — "
+            "do NOT use congested just because background roads have traffic.\n"
+            "- Vehicles on the shoulder are NORMAL - do NOT report them as incidents.\n"
+            "- traffic_state MUST be consistent with your notes. If you note \"no vehicles\" or \"empty road\", "
+            "traffic_state must be \"smooth\".\n"
             "\n"
-            "INCIDENT TYPES (use the most specific applicable):\n"
-            "- crash: Visible collision, damaged vehicles, or vehicles at impact angles\n"
-            "- stopped_vehicle_lane: Vehicle stopped in active travel lane (high severity)\n"
-            "- stopped_vehicle_shoulder: Vehicle stopped on shoulder or emergency lane\n"
-            "- stalled_vehicle: Vehicle appears disabled (hazards on, hood up, people nearby)\n"
-            "- debris: Objects, cargo, or materials on roadway\n"
-            "- emergency_response: Police, fire, ambulance, or tow trucks present\n"
-            "- pedestrian: Person visible on roadway or shoulder (high severity)\n"
-            "- traffic_anomaly: Unexplained slowdown, gap in traffic, or unusual pattern\n"
+            "JSON SCHEMA:\n"
+            "{\"observed_direction\": \"EB|WB|NB|SB\", \"traffic_state\": \"smooth|slow|congested|unknown\", "
+            "\"incidents\": [{\"type\": \"string\", \"severity\": \"low|medium|high\", \"description\": \"string\", "
+            "\"bbox\": [x1, y1, x2, y2]}], "
+            "\"notes\": \"brief scene summary\", \"overall_confidence\": 0.0-1.0}\n"
             "\n"
-            "SEVERITY GUIDELINES:\n"
-            "- high: Crashes, vehicles in active lanes, pedestrians, lane blockages, clear safety hazards\n"
-            "- medium: Shoulder stops with people visible, debris in lanes, emergency response, significant slowdowns\n"
-            "- low: Routine shoulder stops, minor debris on shoulder, unclear anomalies\n"
-            "\n"
-            "DESCRIPTION REQUIREMENTS:\n"
-            "Provide detailed spatial context for each incident:\n"
-            "- Location: specify lane (left lane, right lane, center lane, shoulder, median)\n"
-            "- Direction of travel: match the observed_direction field\n"
-            "- Vehicle details: color, type (sedan, truck, SUV), orientation if visible\n"
-            "- Context: distance from camera (foreground/midground/background), relation to other vehicles\n"
-            "- Indicators: hazard lights, emergency lights, people visible, damage visible\n"
-            "\n"
-            "Example: 'Dark colored sedan stopped on right shoulder approximately 200 feet from camera, hazard lights visible, appears occupied'\n"
-            "\n"
-            "RESPONSE FORMAT:\n"
-            "Respond with ONLY valid JSON matching this exact schema:\n"
-            "{\n"
-            "  \"observed_direction\": \"string (EB, WB, NB, SB - direction of traffic flow you observe)\",\n"
-            "  \"traffic_state\": \"string (one of: free, moderate, heavy, stop_and_go, unknown)\",\n"
-            "  \"incidents\": [\n"
-            "    {\n"
-            "      \"type\": \"string (use incident types listed above)\",\n"
-            "      \"severity\": \"string (low, medium, or high)\",\n"
-            "      \"description\": \"string (detailed spatial description with location, vehicle details, context)\"\n"
-            "    }\n"
-            "  ],\n"
-            "  \"notes\": \"string (single-paragraph scene summary; if no incidents, still include weather/visibility, vehicle presence, lane usage, and overall traffic flow)\",\n"
-            "  \"overall_confidence\": number (0.0 to 1.0, your confidence in this entire analysis)\n"
-            "}\n"
-            "\n"
-            "CONFIDENCE SCORING:\n"
-            "- 0.9-1.0: Excellent visibility, clear incidents/conditions\n"
-            "- 0.7-0.9: Good visibility, confident assessment\n"
-            "- 0.5-0.7: Moderate visibility or uncertain details, but suspicious patterns detected\n"
-            "- 0.3-0.5: Poor visibility or ambiguous scene, reporting out of abundance of caution\n"
-            "- 0.0-0.3: Very poor quality, but potential incident indicators visible\n"
-            "\n"
-            "EXAMPLES:\n"
-            "\n"
-            "Example 1 - Clear incident:\n"
-            "{\n"
-            "  \"observed_direction\": \"WB\",\n"
-            "  \"traffic_state\": \"free\",\n"
-            "  \"incidents\": [\n"
-            "    {\n"
-            "      \"type\": \"stopped_vehicle_shoulder\",\n"
-            "      \"severity\": \"medium\",\n"
-            "      \"description\": \"White pickup truck stopped on right shoulder in foreground, hazard lights visible, driver's door appears open with person standing nearby\"\n"
-            "    }\n"
-            "  ],\n"
-            "  \"notes\": \"1 stopped vehicle on shoulder with occupant outside\",\n"
-            "  \"overall_confidence\": 0.85\n"
-            "}\n"
-            "\n"
-            "Example 2 - Low resolution but suspicious:\n"
-            "{\n"
-            "  \"observed_direction\": \"EB\",\n"
-            "  \"traffic_state\": \"stop_and_go\",\n"
-            "  \"incidents\": [\n"
-            "    {\n"
-            "      \"type\": \"traffic_anomaly\",\n"
-            "      \"severity\": \"medium\",\n"
-            "      \"description\": \"Unusual traffic gap in right lane approximately 300 feet from camera, upstream vehicles showing heavy brake lights, possible unseen incident or obstruction\"\n"
-            "    }\n"
-            "  ],\n"
-            "  \"notes\": \"Traffic anomaly detected - possible incident\",\n"
-            "  \"overall_confidence\": 0.55\n"
-            "}\n"
-            "\n"
-            "Example 3 - No incidents:\n"
-            "{\n"
-            "  \"observed_direction\": \"WB\",\n"
-            "  \"traffic_state\": \"moderate\",\n"
-            "  \"incidents\": [],\n"
-            "  \"notes\": \"No active incidents are visible in this frame; westbound traffic is moving steadily at moderate density with consistent spacing across open travel lanes, a typical mix of passenger cars and larger vehicles, and no obvious lane blockages or abrupt braking patterns. Weather and pavement appear stable for the captured image, visibility is sufficient for lane-level monitoring, and the scene reflects normal freeway operations at the time of capture.\",\n"
-            "  \"overall_confidence\": 0.90\n"
-            "}\n"
-            "\n"
-            "Remember: Report anything suspicious. Human operators want to know about potential incidents even with uncertainty."
+            "BBOX: For each incident, provide a bounding box [x1, y1, x2, y2] as fractions of image width/height "
+            "(0.0 to 1.0). x1,y1 = top-left corner, x2,y2 = bottom-right corner. "
+            "The bbox should tightly enclose the vehicle or object involved in the incident."
         )
         user_text = (
             "Analyze this freeway camera image for traffic incidents and conditions.\n"
@@ -209,38 +158,42 @@ class VLMClient:
         encoded = base64.b64encode(image_bytes).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
 
-    def _extract_output_text(self, payload):
-        if isinstance(payload, dict) and payload.get("choices"):
-            message = payload["choices"][0].get("message", {})
-            content = message.get("content")
-            if isinstance(content, list):
-                parts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "text" and item.get("text"):
-                            parts.append(item["text"])
-                        elif item.get("text"):
-                            parts.append(item["text"])
-                    elif isinstance(item, str):
-                        parts.append(item)
-                if parts:
-                    return "".join(parts).strip()
-            if isinstance(content, str):
-                return content
-        if isinstance(payload, dict) and payload.get("output_text"):
-            return payload["output_text"]
-        raise ValueError("No response text found in VLM response")
-
     def _parse_json(self, text):
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
-        for match in re.finditer(r"\{.*?\}", text, re.DOTALL):
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
+        # Extract top-level JSON objects using bracket counting so nested
+        # braces (e.g. incidents: [{...}]) don't truncate the match.
+        for start in range(len(text)):
+            if text[start] != "{":
                 continue
+            depth = 0
+            in_string = False
+            escape = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"' and not escape:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : i + 1]
+                        try:
+                            return json.loads(candidate)
+                        except json.JSONDecodeError:
+                            break
         raise ValueError("No valid JSON found in VLM response")
 
 
@@ -263,6 +216,16 @@ class VLMClient:
                     item = {"description": str(incident)}
                 item.setdefault("type", "incident")
                 item.setdefault("description", "unspecified")
+                # Normalize bbox
+                bbox = item.get("bbox")
+                if bbox is not None:
+                    try:
+                        bbox = [float(v) for v in bbox]
+                        if len(bbox) != 4:
+                            bbox = None
+                    except (TypeError, ValueError):
+                        bbox = None
+                item["bbox"] = bbox
                 severity = item.get("severity")
                 severity_value = str(severity).strip().lower() if severity is not None else ""
                 severity_map = {
@@ -279,7 +242,15 @@ class VLMClient:
             parsed["incidents"] = normalized_incidents
             traffic_state = parsed.get("traffic_state")
             if isinstance(traffic_state, str):
-                parsed["traffic_state"] = traffic_state.strip().lower().replace(" ", "_")
+                normalized_ts = traffic_state.strip().lower().replace(" ", "_")
+                # Map legacy 4-state labels to new 3-state labels
+                ts_map = {
+                    "free": "smooth",
+                    "moderate": "slow",
+                    "heavy": "congested",
+                    "stop_and_go": "congested",
+                }
+                parsed["traffic_state"] = ts_map.get(normalized_ts, normalized_ts)
             confidence = parsed.get("overall_confidence")
             if confidence is not None:
                 try:
@@ -329,61 +300,373 @@ class VLMClient:
         }
         return normalized in generic
 
-    def analyze(self, camera, image_bytes, captured_at, content_type=None):
-        system, user_text = self._build_prompt(camera, captured_at)
-        image_url = self._image_to_data_url(image_bytes, content_type)
+    def _build_comparison_prompt(self, camera, captured_at, motion_context=None):
+        system = (
+            "You are a freeway traffic incident detection system. You are seeing TWO frames ~5-10 seconds apart "
+            "from the same camera. Analyze the pair together and respond with JSON only.\n"
+            "\n"
+            "MULTI-FRAME ANALYSIS RULES:\n"
+            "- CRITICAL: A vehicle in the same LANE POSITION across two frames does NOT mean it is stopped. "
+            "On a busy freeway, DIFFERENT vehicles often occupy the same spot seconds apart. "
+            "To confirm a stopped vehicle, look for THE EXACT SAME vehicle (same color, shape, size) "
+            "that has NOT moved at all between frames.\n"
+            "- Shifting headlights = MOVING traffic, NOT emergency lights\n"
+            "- Compare vehicle positions between frames to determine actual movement\n"
+            "- If traffic is flowing (vehicles appear in different positions), do NOT report stopped vehicles\n"
+            "\n"
+            "NIGHTTIME FALSE POSITIVE RULES (CRITICAL — most false alarms happen at night):\n"
+            "- At night you can ONLY see headlights and taillights, NOT vehicle shapes. "
+            "You CANNOT determine if a vehicle is stopped just from lights alone.\n"
+            "- Headlights/taillights in the same lane position across frames are almost always DIFFERENT vehicles "
+            "in normal flowing traffic — NOT one stopped vehicle.\n"
+            "- Do NOT report 'stopped_vehicle_lane' at night unless you can clearly see a dark vehicle shape "
+            "with hazard lights or a vehicle visibly blocking traffic with cars swerving around it.\n"
+            "- Do NOT report 'emergency_response' unless you see CLEARLY ALTERNATING red/blue flashing patterns "
+            "that are distinctly different from normal headlights or brake lights. "
+            "Regular bright headlights or clusters of taillights are NOT emergency lights.\n"
+            "- When in doubt at night, report NO incidents. It is far better to miss a marginal incident "
+            "than to report a false alarm.\n"
+            "\n"
+            "TRAFFIC STATES (based on vehicle count and spacing on the PRIMARY freeway lanes ONLY):\n"
+            "- smooth: few or no vehicles visible, open lanes, traffic flowing freely\n"
+            "- slow: noticeable traffic, vehicles moving at reduced speed, some congestion\n"
+            "- congested: dense traffic, vehicles closely spaced, stopped or barely moving\n"
+            "- unknown: cannot determine (e.g. obstructed view, night with no visible vehicles)\n"
+            "\n"
+            "INCIDENT TYPES: crash, stopped_vehicle_lane, stalled_vehicle, debris, emergency_response, pedestrian, traffic_anomaly\n"
+            "SEVERITY: high (crashes, vehicles in lanes, pedestrians), medium (debris in lanes, lane closures), low (minor anomalies)\n"
+            "\n"
+            "CRITICAL RULES:\n"
+            "- Focus ONLY on the PRIMARY freeway lanes (the main road this camera monitors). Ignore background roads, "
+            "cross streets, overpasses, ramps, and any traffic on other roadways.\n"
+            "- If the primary freeway lanes are empty or have very few vehicles, traffic_state MUST be \"smooth\" — "
+            "do NOT use congested just because background roads have traffic.\n"
+            "- Vehicles on the shoulder are NORMAL - do NOT report them as incidents.\n"
+            "- traffic_state MUST be consistent with your notes. If you note \"no vehicles\" or \"empty road\", "
+            "traffic_state must be \"smooth\".\n"
+            "\n"
+            "JSON SCHEMA:\n"
+            "{\"observed_direction\": \"EB|WB|NB|SB\", \"traffic_state\": \"smooth|slow|congested|unknown\", "
+            "\"incidents\": [{\"type\": \"string\", \"severity\": \"low|medium|high\", \"description\": \"string\", "
+            "\"bbox\": [x1, y1, x2, y2]}], "
+            "\"notes\": \"brief scene summary\", \"overall_confidence\": 0.0-1.0}\n"
+            "\n"
+            "BBOX: For each incident, provide a bounding box [x1, y1, x2, y2] as fractions of image width/height "
+            "(0.0 to 1.0). x1,y1 = top-left corner, x2,y2 = bottom-right corner of the FIRST frame. "
+            "The bbox should tightly enclose the vehicle or object involved in the incident."
+        )
+        motion_line = ""
+        if motion_context:
+            vehicle_count = motion_context.get('vehicle_count')
+            vehicle_part = f", vehicle_count={vehicle_count}" if vehicle_count is not None else ""
+            brightness = motion_context.get('mean_brightness', 128)
+            is_night = brightness < 40
+            night_part = ""
+            if is_night:
+                night_part = (
+                    "\n*** NIGHTTIME SCENE (low brightness). Apply strict nighttime false positive rules. "
+                    "Do NOT report stopped vehicles or emergency response unless evidence is UNMISTAKABLE. ***"
+                )
+            motion_line = (
+                f"\nLocal motion analysis: changed_pixel_fraction={motion_context.get('changed_pixel_fraction', 'N/A')}, "
+                f"anomaly={motion_context.get('anomaly_detected', False)}{vehicle_part}, "
+                f"mean_brightness={brightness} ({'NIGHTTIME' if is_night else 'daytime'})"
+                f"{night_part}"
+                "\nNote: motion analysis measures pixel changes only — it cannot distinguish an empty road from "
+                "stopped traffic. vehicle_count is from YOLOv8 object detection. "
+                "YOU must determine traffic_state from what you SEE in the images."
+            )
+            # YOLO stopped vehicle cross-check
+            stopped_vehicles = motion_context.get("stopped_vehicles")
+            if stopped_vehicles is not None:
+                if stopped_vehicles:
+                    descriptions = []
+                    for sv in stopped_vehicles:
+                        descriptions.append(
+                            f"{sv['class_name']} (IoU={sv['iou']:.2f})"
+                        )
+                    motion_line += (
+                        f"\nYOLO cross-frame check: {len(stopped_vehicles)} vehicle(s) detected at "
+                        f"same position in both frames: {', '.join(descriptions)}. "
+                        "These MAY be genuinely stopped — verify visually."
+                    )
+                else:
+                    motion_line += (
+                        "\nYOLO cross-frame check: NO vehicles detected at the same position in both frames. "
+                        "All vehicles appear to have moved. Be VERY cautious about reporting stopped vehicles."
+                    )
+            # False alarm feedback
+            false_alarm_context = motion_context.get("false_alarm_context")
+            if false_alarm_context:
+                motion_line += f"\n{false_alarm_context}"
+        user_text = (
+            "Analyze these TWO freeway camera frames (earlier and later, ~5-10s apart) for traffic incidents.\n"
+            "\n"
+            f"Camera: {camera.get('name')}\n"
+            f"Location: {camera.get('corridor')} {camera.get('direction')}bound\n"
+            f"Camera ID: {camera.get('camera_id')}\n"
+            f"Timestamp: {captured_at}\n"
+            f"{motion_line}\n"
+            "\n"
+            "Compare the two frames carefully for:\n"
+            "1. Vehicles that have NOT moved between frames (stopped in lanes)\n"
+            "2. Traffic flow patterns — are vehicles progressing or stationary?\n"
+            "3. Visible incidents, debris, or anomalies\n"
+            "4. Emergency response presence (stationary flashing lights vs. moving headlights)\n"
+            "\n"
+            "IMPORTANT: Think step by step before concluding. In your notes field, include your reasoning:\n"
+            "1. What do you see in each frame?\n"
+            "2. Did any specific vehicle stay in the exact same position?\n"
+            "3. Is this nighttime? If so, can you actually see vehicle shapes or only lights?\n"
+            "4. What is your confidence that each incident is REAL and not a false positive?\n"
+            "\n"
+            "Provide your analysis as JSON only."
+        )
+        return system, user_text
+
+    def _call_vlm(self, messages, max_tokens=None):
+        """Single VLM API call with retries. Returns response text."""
         last_error = None
-        url = f"{self.base_url}/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=max_tokens or self.max_tokens,
+                    timeout=self.timeout_seconds,
+                )
+                text = response.choices[0].message.content
+                if not text:
+                    raise ValueError("No response text found in VLM response")
+                return text
+            except (ValidationError, ValueError) as exc:
+                last_error = exc
+            except openai.APIError as exc:
+                last_error = exc
+            time.sleep(1.0 * attempt)
+        raise RuntimeError(f"VLM call failed after {self.max_retries} attempts: {last_error}")
+
+    def _postprocess_result(self, camera, result):
+        """Common post-processing for VLM results."""
+        if result.traffic_state == "unknown":
+            result.traffic_state = "slow" if result.incidents else "smooth"
+        if not result.incidents and self._is_generic_clear_note(result.notes):
+            result.notes = self._summary_notes(
+                result.incidents,
+                traffic_state=result.traffic_state,
+                observed_direction=result.observed_direction,
+            )
+        elif not result.notes or not result.notes.strip():
+            result.notes = self._summary_notes(
+                result.incidents,
+                traffic_state=result.traffic_state,
+                observed_direction=result.observed_direction,
+            )
+        return result
+
+    def verify_incidents(self, camera, image_bytes_early, image_bytes_late,
+                         incidents, content_type=None):
+        """Stage 2: Crop each incident region from both frames and verify.
+
+        Returns list of verified Incident objects (subset of input).
+        """
+        if not incidents:
+            return []
+
+        verified = []
+        for incident in incidents:
+            if not incident.bbox:
+                # No bbox → can't crop → skip verification, keep as-is
+                verified.append(incident)
+                continue
+
+            crop_early = _crop_incident_region(image_bytes_early, incident.bbox)
+            crop_late = _crop_incident_region(image_bytes_late, incident.bbox)
+            if not crop_early or not crop_late:
+                continue
+
+            early_url = self._image_to_data_url(crop_early, content_type)
+            late_url = self._image_to_data_url(crop_late, content_type)
+
+            prompt = (
+                f"You are verifying a potential traffic incident detected by an AI system.\n\n"
+                f"The system detected: {incident.type} ({incident.severity})\n"
+                f"Description: {incident.description}\n"
+                f"Camera: {camera.get('name')} — {camera.get('corridor')} {camera.get('direction')}bound\n\n"
+                "You are seeing CROPPED and ZOOMED views of the incident region from TWO frames "
+                "(earlier and later, ~5-20 seconds apart).\n\n"
+                "Answer these questions:\n"
+                "1. Can you see the SAME vehicle in BOTH crops? (same shape, color, size)\n"
+                "2. Has this vehicle clearly NOT moved between the two frames?\n"
+                "3. If nighttime: can you see the actual vehicle shape, or only lights?\n"
+                "4. Could this be a DIFFERENT vehicle that happens to be in the same lane position?\n"
+                "5. For emergency_response: are there clearly alternating red/blue flashing lights?\n\n"
+                "Respond with JSON only:\n"
+                "{\"is_real_incident\": true/false, \"reasoning\": \"your explanation\"}"
+            )
+            messages = [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": user_text},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": image_url},
-                        },
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": early_url}},
+                        {"type": "image_url", "image_url": {"url": late_url}},
                     ],
                 },
-            ],
-            "temperature": 0.0,
-            "max_tokens": self.max_tokens,
-        }
-        for attempt in range(1, self.max_retries + 1):
+            ]
             try:
-                response = requests.post(url, headers=self.headers, json=payload, timeout=self.timeout_seconds)
-                if response.status_code >= 400:
-                    try:
-                        error_payload = response.json()
-                    except ValueError:
-                        error_payload = response.text
-                    raise RuntimeError(f"HTTP {response.status_code}: {error_payload}")
-                data = response.json()
-                text = self._extract_output_text(data)
+                text = self._call_vlm(messages, max_tokens=256)
                 parsed = self._parse_json(text)
-                parsed = self._normalize_parsed(camera, parsed)
-                result = VLMResult.model_validate(parsed)
-                if result.traffic_state == "unknown":
-                    result.traffic_state = "moderate" if result.incidents else "free"
-                if not result.incidents and self._is_generic_clear_note(result.notes):
-                    result.notes = self._summary_notes(
-                        result.incidents,
-                        traffic_state=result.traffic_state,
-                        observed_direction=result.observed_direction,
-                    )
-                elif not result.notes or not result.notes.strip():
-                    result.notes = self._summary_notes(
-                        result.incidents,
-                        traffic_state=result.traffic_state,
-                        observed_direction=result.observed_direction,
-                    )
-                return result, text
-            except (ValidationError, ValueError, RuntimeError) as exc:
-                last_error = exc
+                is_real = parsed.get("is_real_incident", False)
+                reasoning = parsed.get("reasoning", "")
+                if is_real:
+                    verified.append(incident)
+                    print(f"  Incident VERIFIED: {incident.type} — {reasoning[:80]}")
+                else:
+                    print(f"  Incident REJECTED: {incident.type} — {reasoning[:80]}")
             except Exception as exc:
-                last_error = exc
-            time.sleep(1.0 * attempt)
-        raise RuntimeError(f"VLM failed after {self.max_retries} attempts: {last_error}")
+                # On verification failure, keep the incident (fail-open for false negatives)
+                print(f"  Verification call failed for {incident.type}: {exc}")
+                verified.append(incident)
+
+        return verified
+
+    def reflect_on_assessment(self, camera, image_bytes_early, image_bytes_late,
+                              stage1_result, verified_incidents, content_type=None):
+        """Stage 3: Self-reflection. Show VLM its assessment and ask for final decision.
+
+        Returns a final VLMResult with potentially revised incidents.
+        """
+        early_url = self._image_to_data_url(image_bytes_early, content_type)
+        late_url = self._image_to_data_url(image_bytes_late, content_type)
+
+        stage1_summary = json.dumps(stage1_result.model_dump(), indent=2)
+        verified_types = [i.type for i in verified_incidents]
+
+        prompt = (
+            "You are performing a FINAL REVIEW of a traffic incident assessment.\n\n"
+            f"Camera: {camera.get('name')} — {camera.get('corridor')} {camera.get('direction')}bound\n\n"
+            f"INITIAL ASSESSMENT:\n{stage1_summary}\n\n"
+            f"After cropped-image verification, these incidents were confirmed: {verified_types}\n\n"
+            "Look at the full frames again. For your FINAL DECISION, consider:\n"
+            "1. Are the confirmed incidents TRULY visible and unambiguous?\n"
+            "2. Would a human traffic operator agree these are real incidents?\n"
+            "3. Are there any incidents you MISSED in the initial scan?\n"
+            "4. Should any confirmed incidents be downgraded or removed?\n\n"
+            "Return your FINAL assessment as JSON:\n"
+            "{\"observed_direction\": \"EB|WB|NB|SB\", \"traffic_state\": \"smooth|slow|congested|unknown\", "
+            "\"incidents\": [{\"type\": \"string\", \"severity\": \"low|medium|high\", \"description\": \"string\", "
+            "\"bbox\": [x1, y1, x2, y2]}], "
+            "\"notes\": \"brief scene summary with reasoning\", \"overall_confidence\": 0.0-1.0}"
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": early_url}},
+                    {"type": "image_url", "image_url": {"url": late_url}},
+                ],
+            },
+        ]
+
+        text = self._call_vlm(messages)
+        parsed = self._parse_json(text)
+        parsed = self._normalize_parsed(camera, parsed)
+        result = VLMResult.model_validate(parsed)
+        return self._postprocess_result(camera, result), text
+
+    def analyze_comparison(self, camera, image_bytes_early, image_bytes_late, captured_at,
+                           content_type=None, motion_context=None):
+        system, user_text = self._build_comparison_prompt(camera, captured_at, motion_context)
+        early_url = self._image_to_data_url(image_bytes_early, content_type)
+        late_url = self._image_to_data_url(image_bytes_late, content_type)
+        messages = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": early_url},
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": late_url},
+                    },
+                ],
+            },
+        ]
+        text = self._call_vlm(messages)
+        parsed = self._parse_json(text)
+        parsed = self._normalize_parsed(camera, parsed)
+        result = VLMResult.model_validate(parsed)
+        result = self._postprocess_result(camera, result)
+
+        # --- Multi-stage reasoning when incidents detected ---
+        if result.incidents:
+            print(f"  Stage 1: {len(result.incidents)} candidate incident(s), verifying...")
+
+            # Stage 2: Crop & Verify each incident
+            verified = self.verify_incidents(
+                camera, image_bytes_early, image_bytes_late,
+                result.incidents, content_type,
+            )
+
+            if not verified:
+                # All incidents rejected by verification
+                print(f"  Stage 2: All incidents rejected. Clearing.")
+                result.incidents = []
+                result.notes = (
+                    f"Initial scan detected incidents but cropped verification rejected all. "
+                    f"Original notes: {result.notes}"
+                )
+            elif len(verified) < len(result.incidents):
+                # Some rejected
+                print(f"  Stage 2: {len(verified)}/{len(result.incidents)} incidents verified.")
+                result.incidents = verified
+            else:
+                print(f"  Stage 2: All {len(verified)} incident(s) verified.")
+
+            # Stage 3: Self-reflection (only if incidents survive Stage 2)
+            if result.incidents:
+                try:
+                    print(f"  Stage 3: Self-reflection...")
+                    final_result, final_text = self.reflect_on_assessment(
+                        camera, image_bytes_early, image_bytes_late,
+                        result, verified, content_type,
+                    )
+                    if not final_result.incidents:
+                        print(f"  Stage 3: Reflection removed all incidents.")
+                    else:
+                        print(f"  Stage 3: {len(final_result.incidents)} incident(s) in final assessment.")
+                    result = final_result
+                    text = text + "\n--- REFLECTION ---\n" + final_text
+                except Exception as exc:
+                    print(f"  Stage 3 reflection failed: {exc}, keeping Stage 2 result")
+
+        return result, text
+
+    def analyze(self, camera, image_bytes, captured_at, content_type=None):
+        system, user_text = self._build_prompt(camera, captured_at)
+        image_url = self._image_to_data_url(image_bytes, content_type)
+        messages = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url},
+                    },
+                ],
+            },
+        ]
+        text = self._call_vlm(messages)
+        parsed = self._parse_json(text)
+        parsed = self._normalize_parsed(camera, parsed)
+        result = VLMResult.model_validate(parsed)
+        return self._postprocess_result(camera, result), text
