@@ -98,18 +98,44 @@ const renderIncidents = (items) => {
     const cameraName = item.camera_name || camerasById.get(item.camera_id)?.name || item.camera_id || "Unknown camera";
     const severity = (item.severity || "unknown").toLowerCase();
     const image = frameUrl(item.image_path);
+    const annotatedImage = item.annotated_image_path ? `/frames/${item.annotated_image_path}` : null;
 
     const card = document.createElement("article");
     card.className = "incident-card";
 
+    const clipUrl = item.clip_path ? `/frames/${item.clip_path}` : null;
+
     const left = document.createElement("div");
     left.className = "thumb-wrap";
-    if (image) {
+    if (clipUrl) {
+      const video = document.createElement("video");
+      video.src = clipUrl;
+      video.controls = true;
+      video.muted = true;
+      video.loop = true;
+      video.preload = "metadata";
+      video.style.width = "100%";
+      video.style.borderRadius = "8px";
+      left.appendChild(video);
+    } else if (annotatedImage || image) {
       const img = document.createElement("img");
-      img.src = image;
+      img.src = annotatedImage || image;
       img.alt = `Incident frame for ${cameraName}`;
       img.loading = "lazy";
       img.decoding = "async";
+      if (annotatedImage) {
+        img.title = "VLM-annotated snapshot (click to toggle original)";
+        img.style.cursor = "pointer";
+        img.addEventListener("click", () => {
+          if (img.src.includes("annotated")) {
+            img.src = image;
+            img.title = "Original snapshot (click to toggle annotated)";
+          } else {
+            img.src = annotatedImage;
+            img.title = "VLM-annotated snapshot (click to toggle original)";
+          }
+        });
+      }
       left.appendChild(img);
     } else {
       const blank = document.createElement("div");
@@ -154,6 +180,14 @@ const renderIncidents = (items) => {
 
     const links = document.createElement("div");
     links.className = "inline-links";
+    if (annotatedImage) {
+      const annotatedLink = document.createElement("a");
+      annotatedLink.href = annotatedImage;
+      annotatedLink.target = "_blank";
+      annotatedLink.rel = "noreferrer";
+      annotatedLink.textContent = "Open annotated";
+      links.appendChild(annotatedLink);
+    }
     if (image) {
       const frameLink = document.createElement("a");
       frameLink.href = image;
@@ -162,16 +196,51 @@ const renderIncidents = (items) => {
       frameLink.textContent = "Open frame";
       links.appendChild(frameLink);
     }
+    if (clipUrl) {
+      const clipLink = document.createElement("a");
+      clipLink.href = clipUrl;
+      clipLink.target = "_blank";
+      clipLink.rel = "noreferrer";
+      clipLink.textContent = "Download clip";
+      links.appendChild(clipLink);
+    }
     const hourlyLink = document.createElement("a");
     hourlyLink.href = `/hourly?camera_id=${encodeURIComponent(item.camera_id || "")}`;
     hourlyLink.textContent = "View hourly checks";
     links.appendChild(hourlyLink);
+
+    // False alarm button
+    const falseAlarmBtn = document.createElement("button");
+    falseAlarmBtn.className = "false-alarm-btn" + (item.false_alarm ? " is-false-alarm" : "");
+    falseAlarmBtn.textContent = item.false_alarm ? "Marked as False Alarm" : "False Alarm";
+    falseAlarmBtn.addEventListener("click", async () => {
+      try {
+        const resp = await fetch(`/api/incidents/${item.id}/false_alarm`, { method: "POST" });
+        const data = await resp.json();
+        if (data.false_alarm) {
+          falseAlarmBtn.textContent = "Marked as False Alarm";
+          falseAlarmBtn.classList.add("is-false-alarm");
+          card.classList.add("false-alarm");
+        } else {
+          falseAlarmBtn.textContent = "False Alarm";
+          falseAlarmBtn.classList.remove("is-false-alarm");
+          card.classList.remove("false-alarm");
+        }
+      } catch (err) {
+        alert("Failed to toggle: " + err);
+      }
+    });
+    links.appendChild(falseAlarmBtn);
 
     right.appendChild(top);
     right.appendChild(meta);
     right.appendChild(description);
     right.appendChild(notes);
     right.appendChild(links);
+
+    if (item.false_alarm) {
+      card.classList.add("false-alarm");
+    }
 
     card.appendChild(left);
     card.appendChild(right);
@@ -226,6 +295,23 @@ const init = async () => {
   await loadFilters();
   await refresh();
 };
+
+const clearBtn = document.getElementById("clear-btn");
+clearBtn?.addEventListener("click", async () => {
+  const camId = selectedCameraId();
+  const label = camId ? "incidents for this camera" : "ALL incidents";
+  if (!confirm("Delete " + label + "? This cannot be undone.")) return;
+  const params = new URLSearchParams();
+  if (camId) params.set("camera_id", camId);
+  try {
+    const resp = await fetch("/api/incidents/clear?" + params, { method: "POST" });
+    const data = await resp.json();
+    alert("Deleted " + (data.deleted || 0) + " incident entries.");
+    refresh();
+  } catch (err) {
+    alert("Clear failed: " + err);
+  }
+});
 
 cameraFilter?.addEventListener("change", () => {
   initialCameraId = selectedCameraId();

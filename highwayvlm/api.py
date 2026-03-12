@@ -9,9 +9,29 @@ from fastapi.staticfiles import StaticFiles
 
 from highwayvlm.config_loader import load_cameras
 from highwayvlm.pipeline import run_loop
-from highwayvlm.settings import FRAMES_DIR
+from highwayvlm.settings import (
+    FRAMES_DIR,
+    get_hls_enabled,
+    get_hls_frame_interval,
+    get_hls_max_consecutive_failures,
+    get_hls_num_frames,
+    get_hls_timeout_seconds,
+    get_min_vlm_interval_seconds,
+    get_motion_diff_threshold,
+    get_motion_high_threshold,
+    get_motion_low_threshold,
+    get_periodic_vlm_interval_seconds,
+    get_run_interval_seconds,
+    get_snapshot_interval_seconds,
+    get_vlm_interval_seconds,
+    get_vlm_model,
+)
 from highwayvlm.storage import (
+    clear_hourly,
+    clear_incidents,
+    clear_vlm_logs,
     get_archive_overview,
+    get_debug_stats,
     get_status_summary,
     init_db,
     list_hourly_snapshots,
@@ -19,6 +39,7 @@ from highwayvlm.storage import (
     list_latest_log,
     list_logs,
     sync_cameras,
+    toggle_false_alarm,
 )
 
 app = FastAPI(title="HighwayVLM API")
@@ -89,6 +110,64 @@ def overnight_page():
 @app.get("/camera/{camera_id}/overnight")
 def camera_overnight_page(camera_id: str):
     return RedirectResponse(url=f"/overnight?camera_id={quote(camera_id)}")
+
+
+@app.get("/debug", response_class=HTMLResponse)
+def debug_page():
+    return FileResponse(_WEB_DIR / "debug.html")
+
+
+@app.get("/api/debug/stats")
+def debug_stats_api(
+    camera_id: Optional[str] = None,
+    hours: int = Query(1, ge=1, le=168),
+):
+    stats = get_debug_stats(camera_id=camera_id, hours=hours)
+    stats["settings"] = {
+        "RUN_INTERVAL_SECONDS": get_run_interval_seconds(),
+        "SNAPSHOT_INTERVAL_SECONDS": get_snapshot_interval_seconds(),
+        "VLM_INTERVAL_SECONDS": get_vlm_interval_seconds(),
+        "MIN_VLM_INTERVAL_SECONDS": get_min_vlm_interval_seconds(),
+        "PERIODIC_VLM_INTERVAL_SECONDS": get_periodic_vlm_interval_seconds(),
+        "HLS_ENABLED": get_hls_enabled(),
+        "HLS_NUM_FRAMES": get_hls_num_frames(),
+        "HLS_FRAME_INTERVAL": get_hls_frame_interval(),
+        "HLS_TIMEOUT_SECONDS": get_hls_timeout_seconds(),
+        "HLS_MAX_CONSECUTIVE_FAILURES": get_hls_max_consecutive_failures(),
+        "MOTION_DIFF_THRESHOLD": get_motion_diff_threshold(),
+        "MOTION_HIGH_THRESHOLD": get_motion_high_threshold(),
+        "MOTION_LOW_THRESHOLD": get_motion_low_threshold(),
+        "VLM_MODEL": get_vlm_model(),
+    }
+    return stats
+
+
+@app.post("/api/debug/clear")
+def debug_clear_api(camera_id: Optional[str] = None):
+    deleted = clear_vlm_logs(camera_id=camera_id)
+    return {"deleted": deleted}
+
+
+@app.post("/api/incidents/clear")
+def incidents_clear_api(camera_id: Optional[str] = None):
+    deleted = clear_incidents(camera_id=camera_id)
+    return {"deleted": deleted}
+
+
+@app.post("/api/incidents/{incident_id}/false_alarm")
+def incidents_false_alarm_api(incident_id: int):
+    result = toggle_false_alarm(incident_id)
+    if result is None:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=404, content={"error": "Incident not found"})
+    return result
+
+
+@app.post("/api/hourly/clear")
+def hourly_clear_api(camera_id: Optional[str] = None):
+    deleted = clear_hourly(camera_id=camera_id)
+    return {"deleted": deleted}
 
 
 @app.get("/health")

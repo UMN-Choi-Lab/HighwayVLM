@@ -1,7 +1,7 @@
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from highwayvlm.settings import INCIDENTS_LOG_PATH, get_db_path
 
@@ -179,6 +179,23 @@ def init_db():
                 "frame_hash": "frame_hash TEXT",
                 "last_seen_at": "last_seen_at TEXT",
                 "last_processed_at": "last_processed_at TEXT",
+                "source_type": "source_type TEXT",
+                "motion_score": "motion_score REAL",
+                "anomaly_detected": "anomaly_detected INTEGER",
+                "anomaly_reason": "anomaly_reason TEXT",
+                "vlm_call_reason": "vlm_call_reason TEXT",
+                "vehicle_count": "vehicle_count INTEGER",
+                "clip_path": "clip_path TEXT",
+                "annotated_image_path": "annotated_image_path TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "incident_events",
+            {
+                "clip_path": "clip_path TEXT",
+                "false_alarm": "false_alarm INTEGER DEFAULT 0",
+                "annotated_image_path": "annotated_image_path TEXT",
             },
         )
         conn.execute(
@@ -303,8 +320,16 @@ def insert_log(log_entry):
                 skipped_reason,
                 frame_hash,
                 last_seen_at,
-                last_processed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_processed_at,
+                source_type,
+                motion_score,
+                anomaly_detected,
+                anomaly_reason,
+                vlm_call_reason,
+                vehicle_count,
+                clip_path,
+                annotated_image_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 log_entry.get("created_at"),
@@ -326,6 +351,14 @@ def insert_log(log_entry):
                 log_entry.get("frame_hash"),
                 log_entry.get("last_seen_at"),
                 log_entry.get("last_processed_at"),
+                log_entry.get("source_type"),
+                log_entry.get("motion_score"),
+                log_entry.get("anomaly_detected"),
+                log_entry.get("anomaly_reason"),
+                log_entry.get("vlm_call_reason"),
+                log_entry.get("vehicle_count"),
+                log_entry.get("clip_path"),
+                log_entry.get("annotated_image_path"),
             ),
         )
     _append_incident_log(log_entry)
@@ -484,8 +517,10 @@ def _archive_incident_events(log_entry):
                     notes,
                     overall_confidence,
                     image_path,
-                    vlm_model
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    vlm_model,
+                    clip_path,
+                    annotated_image_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     log_entry.get("created_at"),
@@ -503,6 +538,8 @@ def _archive_incident_events(log_entry):
                     log_entry.get("overall_confidence"),
                     log_entry.get("image_path"),
                     log_entry.get("vlm_model"),
+                    log_entry.get("clip_path"),
+                    log_entry.get("annotated_image_path"),
                 ),
             )
 
@@ -640,6 +677,258 @@ def _archive_hourly_incident_reports(log_entry, hour_bucket, incidents):
             """,
             rows,
         )
+
+
+def clear_vlm_logs(camera_id=None):
+    with _connect() as conn:
+        if camera_id:
+            cursor = conn.execute(
+                "DELETE FROM vlm_logs WHERE camera_id = ?", (camera_id,)
+            )
+        else:
+            cursor = conn.execute("DELETE FROM vlm_logs")
+        return cursor.rowcount
+
+
+def toggle_false_alarm(incident_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, false_alarm FROM incident_events WHERE id = ?", (incident_id,)
+        ).fetchone()
+        if not row:
+            return None
+        new_value = 0 if row[1] else 1
+        conn.execute(
+            "UPDATE incident_events SET false_alarm = ? WHERE id = ?",
+            (new_value, incident_id),
+        )
+    return {"id": incident_id, "false_alarm": new_value}
+
+
+def get_false_alarm_summary(camera_id=None, days=7, limit=10):
+    """Return recent false alarm patterns grouped by camera + incident type."""
+    with _connect() as conn:
+        where = "WHERE false_alarm = 1"
+        params = []
+        if camera_id:
+            where += " AND camera_id = ?"
+            params.append(camera_id)
+        where += " AND created_at >= datetime('now', ?)"
+        params.append(f"-{days} days")
+        rows = conn.execute(
+            f"""
+            SELECT camera_id, incident_type, COUNT(*) as cnt, description
+            FROM incident_events
+            {where}
+            GROUP BY camera_id, incident_type
+            ORDER BY cnt DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+    return [
+        {
+            "camera_id": row[0],
+            "incident_type": row[1],
+            "count": row[2],
+            "example_description": row[3],
+        }
+        for row in rows
+    ]
+
+
+def clear_incidents(camera_id=None):
+    with _connect() as conn:
+        if camera_id:
+            cursor = conn.execute(
+                "DELETE FROM incident_events WHERE camera_id = ?", (camera_id,)
+            )
+        else:
+            cursor = conn.execute("DELETE FROM incident_events")
+        return cursor.rowcount
+
+
+def clear_hourly(camera_id=None):
+    with _connect() as conn:
+        if camera_id:
+            conn.execute(
+                "DELETE FROM hourly_incident_reports WHERE camera_id = ?", (camera_id,)
+            )
+            cursor = conn.execute(
+                "DELETE FROM hourly_snapshots WHERE camera_id = ?", (camera_id,)
+            )
+        else:
+            conn.execute("DELETE FROM hourly_incident_reports")
+            cursor = conn.execute("DELETE FROM hourly_snapshots")
+        return cursor.rowcount
+
+
+def get_debug_stats(camera_id=None, hours=1):
+    cutoff = (
+        datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=hours)
+    ).isoformat()
+    where = "WHERE created_at >= ?"
+    params = [cutoff]
+    if camera_id:
+        where += " AND camera_id = ?"
+        params.append(camera_id)
+
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+
+        # Motion score stats
+        motion_row = conn.execute(
+            f"SELECT AVG(motion_score) as avg, MIN(motion_score) as min, "
+            f"MAX(motion_score) as max, COUNT(motion_score) as cnt "
+            f"FROM vlm_logs {where} AND motion_score IS NOT NULL",
+            params,
+        ).fetchone()
+        motion_stats = {
+            "avg": motion_row["avg"],
+            "min": motion_row["min"],
+            "max": motion_row["max"],
+            "count": motion_row["cnt"],
+        }
+
+        # Raw motion scores for histogram
+        motion_scores = [
+            r[0]
+            for r in conn.execute(
+                f"SELECT motion_score FROM vlm_logs {where} AND motion_score IS NOT NULL "
+                f"ORDER BY created_at DESC LIMIT 500",
+                params,
+            ).fetchall()
+        ]
+
+        # VLM call reason breakdown
+        vlm_reasons = {
+            r[0] or "null": r[1]
+            for r in conn.execute(
+                f"SELECT vlm_call_reason, COUNT(*) FROM vlm_logs {where} GROUP BY vlm_call_reason",
+                params,
+            ).fetchall()
+        }
+
+        # Source type distribution
+        source_types = {
+            r[0] or "null": r[1]
+            for r in conn.execute(
+                f"SELECT source_type, COUNT(*) FROM vlm_logs {where} GROUP BY source_type",
+                params,
+            ).fetchall()
+        }
+
+        # Error/skip reason breakdown
+        error_reasons = {
+            sanitize_error_message(r[0]) or "null": r[1]
+            for r in conn.execute(
+                f"SELECT error, COUNT(*) FROM vlm_logs {where} AND error IS NOT NULL GROUP BY error",
+                params,
+            ).fetchall()
+        }
+        skip_reasons = {
+            sanitize_error_message(r[0]) or "null": r[1]
+            for r in conn.execute(
+                f"SELECT skipped_reason, COUNT(*) FROM vlm_logs {where} AND skipped_reason IS NOT NULL GROUP BY skipped_reason",
+                params,
+            ).fetchall()
+        }
+
+        # Anomaly detection count
+        anomaly_count = conn.execute(
+            f"SELECT COUNT(*) FROM vlm_logs {where} AND anomaly_detected = 1",
+            params,
+        ).fetchone()[0]
+
+        # Vehicle count stats
+        vehicle_row = conn.execute(
+            f"SELECT AVG(vehicle_count) as avg, MIN(vehicle_count) as min, "
+            f"MAX(vehicle_count) as max, COUNT(vehicle_count) as cnt "
+            f"FROM vlm_logs {where} AND vehicle_count IS NOT NULL",
+            params,
+        ).fetchone()
+        vehicle_stats = {
+            "avg": vehicle_row["avg"],
+            "min": vehicle_row["min"],
+            "max": vehicle_row["max"],
+            "count": vehicle_row["cnt"],
+        }
+
+        # Per-camera motion averages
+        camera_motion = {
+            r[0]: round(r[1], 6) if r[1] is not None else None
+            for r in conn.execute(
+                f"SELECT camera_id, AVG(motion_score) FROM vlm_logs {where} AND motion_score IS NOT NULL GROUP BY camera_id",
+                params,
+            ).fetchall()
+        }
+
+        # Traffic state distribution
+        traffic_states = {
+            r[0] or "null": r[1]
+            for r in conn.execute(
+                f"SELECT traffic_state, COUNT(*) FROM vlm_logs {where} GROUP BY traffic_state",
+                params,
+            ).fetchall()
+        }
+
+        # Hourly VLM call trend (24h buckets)
+        hourly_trend = [
+            {"hour": r[0], "count": r[1]}
+            for r in conn.execute(
+                f"SELECT substr(created_at, 1, 13) as hour_bucket, COUNT(*) "
+                f"FROM vlm_logs {where} GROUP BY hour_bucket ORDER BY hour_bucket",
+                params,
+            ).fetchall()
+        ]
+
+        # Total log count in window
+        total_logs = conn.execute(
+            f"SELECT COUNT(*) FROM vlm_logs {where}", params
+        ).fetchone()[0]
+
+        # Recent 50 log entries with debug fields
+        recent_rows = conn.execute(
+            f"SELECT id, created_at, camera_id, camera_name, traffic_state, "
+            f"motion_score, anomaly_detected, anomaly_reason, vlm_call_reason, "
+            f"source_type, error, skipped_reason, vehicle_count "
+            f"FROM vlm_logs {where} ORDER BY created_at DESC LIMIT 50",
+            params,
+        ).fetchall()
+        recent_logs = [
+            {
+                "id": r[0],
+                "created_at": r[1],
+                "camera_id": r[2],
+                "camera_name": r[3],
+                "traffic_state": r[4],
+                "motion_score": r[5],
+                "anomaly_detected": r[6],
+                "anomaly_reason": r[7],
+                "vlm_call_reason": r[8],
+                "source_type": r[9],
+                "error": sanitize_error_message(r[10]),
+                "skipped_reason": sanitize_error_message(r[11]),
+                "vehicle_count": r[12],
+            }
+            for r in recent_rows
+        ]
+
+    return {
+        "motion_stats": motion_stats,
+        "motion_scores": motion_scores,
+        "vlm_reasons": vlm_reasons,
+        "source_types": source_types,
+        "error_reasons": error_reasons,
+        "skip_reasons": skip_reasons,
+        "anomaly_count": anomaly_count,
+        "camera_motion": camera_motion,
+        "traffic_states": traffic_states,
+        "hourly_trend": hourly_trend,
+        "total_logs": total_logs,
+        "recent_logs": recent_logs,
+        "vehicle_stats": vehicle_stats,
+    }
 
 
 def list_logs(limit=100, camera_id=None):
@@ -828,7 +1117,7 @@ def list_incident_events(limit=200, camera_id=None):
     query = (
         "SELECT id, created_at, captured_at, camera_id, camera_name, corridor, direction, "
         "observed_direction, traffic_state, incident_type, severity, description, notes, "
-        "overall_confidence, image_path, vlm_model "
+        "overall_confidence, image_path, vlm_model, clip_path, false_alarm, annotated_image_path "
         "FROM incident_events"
     )
     params = []
@@ -857,6 +1146,9 @@ def list_incident_events(limit=200, camera_id=None):
             "overall_confidence": row[13],
             "image_path": row[14],
             "vlm_model": row[15],
+            "clip_path": row[16],
+            "false_alarm": row[17],
+            "annotated_image_path": row[18],
         }
         for row in rows
     ]

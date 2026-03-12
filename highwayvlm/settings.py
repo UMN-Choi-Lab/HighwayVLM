@@ -21,6 +21,7 @@ FRAMES_DIR = DATA_DIR / "frames"
 LIVE_FRAMES_DIR = FRAMES_DIR / "live"
 HOURLY_FRAMES_DIR = FRAMES_DIR / "hourly"
 RAW_VLM_OUTPUT_DIR = DATA_DIR / "raw_vlm_outputs"
+INCIDENT_CLIPS_DIR = FRAMES_DIR / "clips"
 INCIDENT_REPORTS_DIR = DATA_DIR / "incident_reports"
 LOGS_DIR = ROOT / "logs"
 INCIDENTS_LOG_PATH = LOGS_DIR / "incidents.jsonl"
@@ -75,7 +76,7 @@ def get_vlm_max_retries():
 
 
 def get_vlm_max_tokens():
-    return int(os.getenv("VLM_MAX_TOKENS", "512"))
+    return int(os.getenv("VLM_MAX_TOKENS", "800"))
 
 
 def get_vlm_max_calls_per_run():
@@ -111,6 +112,74 @@ def get_vlm_api_key():
         if values.get("VLM_API_KEY"):
             return values["VLM_API_KEY"]
     return os.getenv("OPENAI_API_KEY") or os.getenv("VLM_API_KEY")
+
+
+def get_hls_enabled():
+    return os.getenv("HLS_ENABLED", "true").lower() in ("true", "1", "yes")
+
+
+def get_hls_url_template():
+    return os.getenv(
+        "HLS_URL_TEMPLATE",
+        "https://video.dot.state.mn.us/public/{camera_id}.stream/playlist.m3u8",
+    )
+
+
+def get_hls_num_frames():
+    return int(os.getenv("HLS_NUM_FRAMES", "5"))
+
+
+def get_hls_frame_interval():
+    return float(os.getenv("HLS_FRAME_INTERVAL", "5.0"))
+
+
+def get_hls_timeout_seconds():
+    return int(os.getenv("HLS_TIMEOUT_SECONDS", "30"))
+
+
+def get_hls_max_consecutive_failures():
+    return int(os.getenv("HLS_MAX_CONSECUTIVE_FAILURES", "5"))
+
+
+def get_motion_diff_threshold():
+    return int(os.getenv("MOTION_DIFF_THRESHOLD", "30"))
+
+
+def get_motion_high_threshold():
+    return float(os.getenv("MOTION_HIGH_THRESHOLD", "0.05"))
+
+
+def get_motion_low_threshold():
+    return float(os.getenv("MOTION_LOW_THRESHOLD", "0.005"))
+
+
+def get_periodic_vlm_interval_seconds():
+    return int(os.getenv("PERIODIC_VLM_INTERVAL_SECONDS", "900"))
+
+
+def get_yolo_enabled():
+    return os.getenv("YOLO_ENABLED", "true").lower() in ("true", "1", "yes")
+
+
+def get_yolo_confidence():
+    return float(os.getenv("YOLO_CONFIDENCE", "0.25"))
+
+
+def get_yolo_vehicle_classes():
+    raw = os.getenv("YOLO_VEHICLE_CLASSES", "2,3,5,7")
+    return [int(c.strip()) for c in raw.split(",") if c.strip()]
+
+
+def get_incident_confirm_cycles():
+    return int(os.getenv("INCIDENT_CONFIRM_CYCLES", "2"))
+
+
+def get_incident_high_confidence():
+    return float(os.getenv("INCIDENT_HIGH_CONFIDENCE", "0.85"))
+
+
+def get_incident_low_confidence():
+    return float(os.getenv("INCIDENT_LOW_CONFIDENCE", "0.4"))
 
 
 def get_vlm_base_url():
