@@ -8,8 +8,8 @@ This document starts with the workload that was actually run overnight, then sep
 - Cameras in the run: `4`
 - Model actually used: `gpt-4o-mini`
 - Runtime setup used for that run:
-  - `RUN_INTERVAL_SECONDS=30`
-  - `MIN_VLM_INTERVAL_SECONDS=300`
+  - `SYSTEM_INTERVAL_SECONDS=30`
+  - legacy VLM minimum-interval gate was `300` seconds
 - Stored results in that window:
   - `288` saved live frames
   - `288` raw VLM output files

@@ -6,7 +6,11 @@
   const refreshBtn = document.getElementById("refresh-btn");
   const clearBtn = document.getElementById("clear-btn");
   const autoRefreshCb = document.getElementById("auto-refresh");
+  const autoRefreshLabel = document.getElementById("auto-refresh-label");
+  const DEFAULT_REFRESH_SECONDS = 30;
   let refreshTimer = null;
+  let refreshStartTimeout = null;
+  let refreshSeconds = DEFAULT_REFRESH_SECONDS;
 
   // Populate camera list
   fetch("/api/cameras")
@@ -269,7 +273,6 @@
     const settings = data.settings || {};
     const reasons = data.vlm_reasons || {};
     const sources = data.source_types || {};
-    const skips = data.skip_reasons || {};
 
     if (
       ms.count > 0 &&
@@ -315,16 +318,6 @@
           " snapshot vs " +
           hlsCount +
           " HLS). Check HLS_TIMEOUT_SECONDS and HLS_MAX_CONSECUTIVE_FAILURES.",
-      });
-    }
-
-    const minIntervalSkips =
-      skips["vlm_min_interval"] || skips["min_interval"] || 0;
-    const totalSkips = Object.values(skips).reduce((a, b) => a + b, 0);
-    if (totalSkips > 0 && minIntervalSkips > totalSkips * 0.6) {
-      hints.push({
-        cls: "warning",
-        text: "vlm_min_interval dominates skip reasons. Consider lowering MIN_VLM_INTERVAL_SECONDS.",
       });
     }
 
@@ -397,10 +390,45 @@
 
   // --- Refresh logic ---
   function scheduleRefresh() {
-    clearInterval(refreshTimer);
-    if (autoRefreshCb.checked) {
-      refreshTimer = setInterval(fetchStats, 30000);
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
     }
+    if (refreshStartTimeout) {
+      clearTimeout(refreshStartTimeout);
+      refreshStartTimeout = null;
+    }
+
+    if (!autoRefreshCb.checked) {
+      return;
+    }
+
+    // Align refreshes to wall-clock cadence boundaries so all pages refresh together.
+    const intervalMs = refreshSeconds * 1000;
+    const now = Date.now();
+    let delayMs = intervalMs - (now % intervalMs);
+    if (delayMs >= intervalMs) {
+      delayMs = 0;
+    }
+
+    refreshStartTimeout = setTimeout(() => {
+      fetchStats();
+      refreshTimer = setInterval(fetchStats, intervalMs);
+    }, delayMs);
+  }
+
+  function updateRefreshLabel() {
+    if (!autoRefreshLabel) return;
+    autoRefreshLabel.textContent = `Auto-refresh (${refreshSeconds}s)`;
+  }
+
+  async function loadRuntimeRefreshSeconds() {
+    if (!window.HighwayVLMRuntime || typeof window.HighwayVLMRuntime.load !== "function") {
+      return DEFAULT_REFRESH_SECONDS;
+    }
+    const settings = await window.HighwayVLMRuntime.load();
+    const candidate = Number.parseInt(settings?.SYSTEM_INTERVAL_SECONDS, 10);
+    return Number.isFinite(candidate) && candidate > 0 ? candidate : DEFAULT_REFRESH_SECONDS;
   }
 
   refreshBtn.addEventListener("click", fetchStats);
@@ -422,6 +450,12 @@
   hoursFilter.addEventListener("change", fetchStats);
   autoRefreshCb.addEventListener("change", scheduleRefresh);
 
-  fetchStats();
-  scheduleRefresh();
+  async function init() {
+    refreshSeconds = await loadRuntimeRefreshSeconds();
+    updateRefreshLabel();
+    fetchStats();
+    scheduleRefresh();
+  }
+
+  init();
 })();

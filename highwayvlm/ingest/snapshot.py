@@ -33,10 +33,10 @@ def fetch_snapshots_once():
 
 
 def run_loop():
-    from highwayvlm.settings import get_snapshot_interval_seconds
+    from highwayvlm.settings import get_system_interval_seconds
     import time
 
-    interval = get_snapshot_interval_seconds()
+    interval = get_system_interval_seconds()
     while True:
         fetch_snapshots_once()
         time.sleep(interval)

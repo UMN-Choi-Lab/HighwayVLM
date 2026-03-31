@@ -1,18 +1,29 @@
-const REFRESH_SECONDS = 30;
+const DEFAULT_REFRESH_SECONDS = 30;
 const HLS_URL_TEMPLATE = "https://video.dot.state.mn.us/public/{camera_id}.stream/playlist.m3u8";
 
 const grid = document.getElementById("camera-grid");
 const lastUpdated = document.getElementById("last-updated");
 const lastUpdatedFull = document.getElementById("last-updated-full");
 const refreshInterval = document.getElementById("refresh-interval");
+const refreshIntervalLabel = document.getElementById("refresh-interval-label");
 const appStatus = document.getElementById("app-status");
 const statusDetail = document.getElementById("status-detail");
 const refreshNow = document.getElementById("refresh-now");
 const template = document.getElementById("camera-card-template");
 
-refreshInterval.textContent = `${REFRESH_SECONDS}s`;
-
 let refreshing = false;
+let refreshSeconds = DEFAULT_REFRESH_SECONDS;
+let refreshTimer = null;
+let refreshStartTimeout = null;
+
+const renderRefreshCadence = () => {
+  if (refreshInterval) {
+    refreshInterval.textContent = `${refreshSeconds}s`;
+  }
+  if (refreshIntervalLabel) {
+    refreshIntervalLabel.textContent = `Every ${refreshSeconds} seconds`;
+  }
+};
 
 const formatTime = (value) => {
   if (!value) return "--";
@@ -28,6 +39,18 @@ const titleCase = (value) =>
         .replace(/_/g, " ")
         .replace(/\b\w/g, (match) => match.toUpperCase())
     : "Unknown";
+
+const toFiniteNumber = (value) => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatCoordinates = (latitude, longitude) => {
+  const lat = toFiniteNumber(latitude);
+  const lon = toFiniteNumber(longitude);
+  if (lat === null || lon === null) return "--";
+  return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+};
 
 const frameUrlFromPath = (imagePath) => {
   if (!imagePath) return null;
@@ -64,6 +87,8 @@ const buildCard = (camera) => {
   if (camera.snapshot_url) {
     node.dataset.snapshotUrl = camera.snapshot_url;
   }
+  node.dataset.latitude = camera.latitude ?? "";
+  node.dataset.longitude = camera.longitude ?? "";
   node.querySelector(".camera-name").textContent = camera.name || cameraId;
   node.querySelector(".camera-sub").textContent = `${camera.corridor || ""} ${camera.direction || ""}`.trim();
   const link = node.querySelector(".snapshot-link");
@@ -199,7 +224,6 @@ const summarizeSkip = (value) => {
   if (!normalized) return "No recent skip reason.";
   const labels = {
     unchanged_frame: "Frame unchanged; analysis skipped.",
-    vlm_min_interval: "Frame captured; analysis waiting for minimum interval.",
     vlm_error_cooldown: "Frame captured; analysis waiting for error cooldown.",
     vlm_max_calls_per_run: "Frame captured; analysis deferred by per-run limit.",
     vlm_quota_exceeded: "Frame captured; analysis blocked by model quota.",
@@ -277,6 +301,7 @@ const updateCard = (node, summary) => {
   const incidentsEmpty = node.querySelector(".incidents-empty");
   const summaryText = node.querySelector(".summary-text");
   const notesText = node.querySelector(".notes-text-body");
+  const coordinates = node.querySelector(".coordinates");
 
   const latest = summary?.latest_log;
   const analysis = summary?.analysis_log || latest;
@@ -372,6 +397,10 @@ const updateCard = (node, summary) => {
       summaryText.textContent = buildSummaryText(trafficLabel, incidents, isUnknown);
     }
   }
+
+  if (coordinates) {
+    coordinates.textContent = formatCoordinates(node.dataset.latitude, node.dataset.longitude);
+  }
 };
 
 const loadCameras = async () => {
@@ -429,6 +458,8 @@ const ensureCards = (cameras) => {
       if (camera.snapshot_url) {
         existingCard.dataset.snapshotUrl = camera.snapshot_url;
       }
+      existingCard.dataset.latitude = camera.latitude ?? "";
+      existingCard.dataset.longitude = camera.longitude ?? "";
       return;
     }
     grid.appendChild(buildCard(camera));
@@ -476,5 +507,44 @@ if (refreshNow) {
   refreshNow.addEventListener("click", () => refresh("manual"));
 }
 
-refresh("auto");
-setInterval(() => refresh("auto"), REFRESH_SECONDS * 1000);
+const loadRuntimeRefreshSeconds = async () => {
+  if (!window.HighwayVLMRuntime || typeof window.HighwayVLMRuntime.load !== "function") {
+    return DEFAULT_REFRESH_SECONDS;
+  }
+  const settings = await window.HighwayVLMRuntime.load();
+  const candidate = Number.parseInt(settings?.SYSTEM_INTERVAL_SECONDS, 10);
+  return Number.isFinite(candidate) && candidate > 0 ? candidate : DEFAULT_REFRESH_SECONDS;
+};
+
+const scheduleAutoRefresh = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (refreshStartTimeout) {
+    clearTimeout(refreshStartTimeout);
+    refreshStartTimeout = null;
+  }
+
+  // Align refreshes to wall-clock cadence boundaries so all pages refresh together.
+  const intervalMs = refreshSeconds * 1000;
+  const now = Date.now();
+  let delayMs = intervalMs - (now % intervalMs);
+  if (delayMs >= intervalMs) {
+    delayMs = 0;
+  }
+
+  refreshStartTimeout = setTimeout(() => {
+    refresh("auto");
+    refreshTimer = setInterval(() => refresh("auto"), intervalMs);
+  }, delayMs);
+};
+
+const init = async () => {
+  refreshSeconds = await loadRuntimeRefreshSeconds();
+  renderRefreshCadence();
+  refresh("auto");
+  scheduleAutoRefresh();
+};
+
+init();

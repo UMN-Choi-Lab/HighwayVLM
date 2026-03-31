@@ -31,7 +31,7 @@
         <div class="stat-card">
           <span>Auto refresh</span>
           <strong id="refresh-interval">--</strong>
-          <small>Every 30 seconds</small>
+          <small id="refresh-interval-label">Every 30 seconds</small>
         </div>
         <div class="stat-card">
           <span>Last update</span>
@@ -98,6 +98,10 @@
             <span>Incidents</span>
             <strong class="incidents-count">0</strong>
           </div>
+          <div class="stat">
+            <span>Coordinates</span>
+            <strong class="coordinates">--</strong>
+          </div>
         </div>
         <div class="card-section incidents">
           <p class="section-title">Incidents</p>
@@ -116,6 +120,7 @@
     </template>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+    <script src="/static/runtime-settings.js"></script>
     <script src="/static/dashboard.js"></script>
   </body>
 </html>

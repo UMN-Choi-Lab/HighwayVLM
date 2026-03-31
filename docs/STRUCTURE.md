@@ -33,6 +33,7 @@
 ### `highwayvlm/settings.py`
 
 - Centralizes filesystem paths and environment-variable accessors.
+- Provides `get_system_interval_seconds()` as the single cadence source.
 - Defines current runtime directories such as:
   - `data/frames`
   - `data/raw_vlm_outputs`
@@ -55,12 +56,10 @@
 - Main live worker loop.
 - Keeps in-memory per-camera state.
 - Saves every fetched frame.
-- Applies:
-  - poll interval gating
-  - unchanged-frame skipping
-  - minimum VLM interval
-  - post-error cooldown
-  - maximum VLM calls per run
+- Uses centralized cadence from `SYSTEM_INTERVAL_SECONDS`.
+- Runs one concurrent per-camera sweep each tick.
+- Applies CV-first gating before VLM escalation.
+- Applies unchanged-frame and cooldown/quota safeguards.
 
 ### `highwayvlm/storage.py`
 
@@ -134,7 +133,13 @@
 - Fetches:
   - `/cameras`
   - `/status/summary`
-- Renders per-camera cards and refreshes every 30 seconds.
+- Renders per-camera cards and auto-refreshes using `SYSTEM_INTERVAL_SECONDS`.
+
+### `web/static/runtime-settings.js`
+
+- Loads `/api/runtime/settings`.
+- Normalizes `SYSTEM_INTERVAL_SECONDS`.
+- Provides one frontend helper used by dashboard/debug/archive pages.
 
 ### `web/static/incidents.js`
 

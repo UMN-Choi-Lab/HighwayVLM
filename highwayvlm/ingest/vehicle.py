@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import threading
 
 import cv2
 import numpy as np
@@ -31,6 +32,7 @@ _singleton_detector = None
 class VehicleDetector:
     def __init__(self):
         self._model = None
+        self._infer_lock = threading.Lock()
         self._confidence = get_yolo_confidence()
         self._vehicle_classes = get_yolo_vehicle_classes()
 
@@ -45,14 +47,22 @@ class VehicleDetector:
         if not get_yolo_enabled():
             return VehicleDetection()
 
-        self._ensure_model()
+        try:
+            self._ensure_model()
+        except Exception:
+            # Keep pipeline alive if model bootstrap fails in a given environment.
+            return VehicleDetection()
 
         arr = np.frombuffer(frame_bytes, dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             return VehicleDetection()
 
-        results = self._model(img, conf=self._confidence, verbose=False)
+        # Ultralytics model inference is not reliably thread-safe across parallel calls.
+        # Serialize only the model invocation while allowing the rest of camera work
+        # to remain concurrent.
+        with self._infer_lock:
+            results = self._model(img, conf=self._confidence, verbose=False)
 
         vehicle_details = []
         for r in results:

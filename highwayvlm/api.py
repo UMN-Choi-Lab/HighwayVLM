@@ -11,22 +11,10 @@ from highwayvlm.config_loader import load_cameras
 from highwayvlm.pipeline import run_loop
 from highwayvlm.settings import (
     FRAMES_DIR,
-    get_hls_enabled,
-    get_hls_frame_interval,
-    get_hls_max_consecutive_failures,
-    get_hls_num_frames,
-    get_hls_timeout_seconds,
-    get_min_vlm_interval_seconds,
-    get_motion_diff_threshold,
-    get_motion_high_threshold,
-    get_motion_low_threshold,
-    get_periodic_vlm_interval_seconds,
-    get_run_interval_seconds,
-    get_snapshot_interval_seconds,
-    get_vlm_interval_seconds,
-    get_vlm_model,
+    get_runtime_settings_snapshot,
 )
 from highwayvlm.storage import (
+    clear_false_alarms,
     clear_hourly,
     clear_incidents,
     clear_vlm_logs,
@@ -123,23 +111,13 @@ def debug_stats_api(
     hours: int = Query(1, ge=1, le=168),
 ):
     stats = get_debug_stats(camera_id=camera_id, hours=hours)
-    stats["settings"] = {
-        "RUN_INTERVAL_SECONDS": get_run_interval_seconds(),
-        "SNAPSHOT_INTERVAL_SECONDS": get_snapshot_interval_seconds(),
-        "VLM_INTERVAL_SECONDS": get_vlm_interval_seconds(),
-        "MIN_VLM_INTERVAL_SECONDS": get_min_vlm_interval_seconds(),
-        "PERIODIC_VLM_INTERVAL_SECONDS": get_periodic_vlm_interval_seconds(),
-        "HLS_ENABLED": get_hls_enabled(),
-        "HLS_NUM_FRAMES": get_hls_num_frames(),
-        "HLS_FRAME_INTERVAL": get_hls_frame_interval(),
-        "HLS_TIMEOUT_SECONDS": get_hls_timeout_seconds(),
-        "HLS_MAX_CONSECUTIVE_FAILURES": get_hls_max_consecutive_failures(),
-        "MOTION_DIFF_THRESHOLD": get_motion_diff_threshold(),
-        "MOTION_HIGH_THRESHOLD": get_motion_high_threshold(),
-        "MOTION_LOW_THRESHOLD": get_motion_low_threshold(),
-        "VLM_MODEL": get_vlm_model(),
-    }
+    stats["settings"] = get_runtime_settings_snapshot()
     return stats
+
+
+@app.get("/api/runtime/settings")
+def runtime_settings_api():
+    return get_runtime_settings_snapshot()
 
 
 @app.post("/api/debug/clear")
@@ -151,6 +129,12 @@ def debug_clear_api(camera_id: Optional[str] = None):
 @app.post("/api/incidents/clear")
 def incidents_clear_api(camera_id: Optional[str] = None):
     deleted = clear_incidents(camera_id=camera_id)
+    return {"deleted": deleted}
+
+
+@app.post("/api/incidents/clear_false_alarms")
+def incidents_clear_false_alarms_api(camera_id: Optional[str] = None):
+    deleted = clear_false_alarms(camera_id=camera_id)
     return {"deleted": deleted}
 
 
@@ -225,8 +209,13 @@ def status_summary():
 def incidents_api(
     camera_id: Optional[str] = None,
     limit: int = Query(200, ge=1, le=2000),
+    include_false_alarms: bool = False,
 ):
-    return list_incident_events(limit=limit, camera_id=camera_id)
+    return list_incident_events(
+        limit=limit,
+        camera_id=camera_id,
+        include_false_alarms=include_false_alarms,
+    )
 
 
 @app.get("/api/hourly")
@@ -238,5 +227,11 @@ def hourly_api(
 
 
 @app.get("/api/archive/overview")
-def archive_overview_api(camera_id: Optional[str] = None):
-    return get_archive_overview(camera_id=camera_id)
+def archive_overview_api(
+    camera_id: Optional[str] = None,
+    include_false_alarms: bool = False,
+):
+    return get_archive_overview(
+        camera_id=camera_id,
+        include_false_alarms=include_false_alarms,
+    )

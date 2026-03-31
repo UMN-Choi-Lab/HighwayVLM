@@ -11,14 +11,15 @@ This document describes the current implementation, not the intended future desi
 1. FastAPI starts from `main.py`.
 2. Startup initializes the database and syncs the camera catalog.
 3. A daemon thread begins the live polling loop.
-4. The live loop fetches snapshots for cameras that are due.
+4. The live loop fetches snapshots for all configured cameras each tick.
 5. Every fetched frame is written to disk.
 6. A frame hash determines whether the frame changed.
-7. If the frame changed and the VLM is allowed to run, the app calls the OpenAI-compatible API.
-8. The model response is normalized into a strict schema.
-9. The log entry is written to SQLite.
-10. Incident and hourly archive rows are derived from that same log write.
-11. The frontend queries summary and archive endpoints to display current state.
+7. Local CV gating decides whether VLM escalation is needed for that frame.
+8. If gated in, the app calls the OpenAI-compatible API with comparison context.
+9. The model response is normalized into a strict schema.
+10. The log entry is written to SQLite.
+11. Incident and hourly archive rows are derived from that same log write.
+12. The frontend queries summary and archive endpoints to display current state.
 
 ## Folder-By-Folder Reference
 
@@ -109,6 +110,8 @@ On startup:
   - hourly archive page
 - `/overnight`
   - overnight page shell
+- `/debug`
+  - debug/tuning page shell
 
 ### Redirect helper routes
 
@@ -145,10 +148,24 @@ These read from `vlm_logs`.
 
 - `/status/summary`
   - dashboard summary grouped by camera
+- `/api/runtime/settings`
+  - shared runtime settings payload for backend/frontend cadence
+- `/api/debug/stats`
+  - debug aggregates plus runtime settings snapshot
+- `/api/debug/clear`
+  - clears rows from `vlm_logs`
 - `/api/incidents`
   - incident rows from `incident_events`
+- `/api/incidents/clear`
+  - clears incident rows
+- `/api/incidents/clear_false_alarms`
+  - clears rows marked false alarm
+- `/api/incidents/{incident_id}/false_alarm`
+  - toggles false alarm flag for one incident
 - `/api/hourly`
   - hourly snapshot rows plus attached hourly incident reports
+- `/api/hourly/clear`
+  - clears hourly archive rows
 - `/api/archive/overview`
   - total counts and latest timestamps
 
@@ -182,17 +199,18 @@ This state is not persisted across restarts.
 
 ## Poll Decision
 
-A camera is processed only if `_is_due()` says enough time passed since `last_polled_at`.
+Polling cadence is centralized in one setting:
 
-Polling is centralized in:
+- `SYSTEM_INTERVAL_SECONDS`
 
-- `RUN_INTERVAL_SECONDS`
+Tick behavior:
 
-Important nuance:
+- first sweep waits until the next cadence boundary
+- each tick submits all cameras concurrently in a thread pool
+- each camera runs CV-first gating, and only escalates to VLM when warranted
+- the worker keeps a fixed tick schedule instead of `work_duration + sleep`
 
-- this is a target interval, not a hard real-time guarantee
-- cameras are processed sequentially inside one loop
-- realized per-camera cadence becomes `loop work duration + sleep time`, so actual spacing can be slower than the configured interval
+See `docs/POLLING.md` for full cadence and concurrency details.
 
 ## Snapshot Fetch
 
@@ -225,9 +243,7 @@ If the hash matches `last_processed_hash`, the frame is still logged, but the VL
 The worker can also skip VLM analysis for:
 
 - `empty_snapshot`
-- `vlm_min_interval`
 - `vlm_error_cooldown`
-- `vlm_max_calls_per_run`
 - `vlm_quota_exceeded`
 
 Errors are recorded separately in the `error` field.
@@ -438,7 +454,7 @@ Requests:
 
 Refresh interval:
 
-- 30 seconds in the current JS
+- loaded from `/api/runtime/settings` using `SYSTEM_INTERVAL_SECONDS`
 
 The dashboard prefers the configured `snapshot_url` for preview images and uses stored frame paths as fallback.
 

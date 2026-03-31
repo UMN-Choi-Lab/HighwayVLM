@@ -4,6 +4,15 @@ import yaml
 from highwayvlm.settings import get_camera_config_path
 
 
+def _to_optional_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def load_cameras(config_path=None):
     path = Path(config_path) if config_path else get_camera_config_path()
     if not path.exists():
@@ -21,5 +30,7 @@ def load_cameras(config_path=None):
             "source_url": str(entry.get("source_url", "")).strip(),
             "corridor": str(entry.get("corridor", "")).strip(),
             "direction": str(entry.get("direction", "")).strip(),
+            "latitude": _to_optional_float(entry.get("latitude")),
+            "longitude": _to_optional_float(entry.get("longitude")),
         })
     return cameras

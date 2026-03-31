@@ -14,7 +14,7 @@ from highwayvlm.config_loader import load_cameras
 from highwayvlm.settings import (
     FRAMES_DIR,
     RAW_VLM_OUTPUT_DIR,
-    get_vlm_interval_seconds,
+    get_system_interval_seconds,
     get_vlm_model,
 )
 from highwayvlm.storage import init_db, insert_log, sync_cameras
@@ -121,7 +121,7 @@ def run_once():
 
 
 def run_loop():
-    interval = get_vlm_interval_seconds()
+    interval = get_system_interval_seconds()
     while True:
         run_once()
         time.sleep(interval)

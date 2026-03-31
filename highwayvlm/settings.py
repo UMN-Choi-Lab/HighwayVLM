@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+﻿from dataclasses import dataclass
+from pathlib import Path
 import os
 
 try:
@@ -28,6 +29,15 @@ INCIDENTS_LOG_PATH = LOGS_DIR / "incidents.jsonl"
 DEFAULT_DB_PATH = DATA_DIR / "highwayvlm.db"
 
 
+@dataclass(frozen=True)
+class PipelineRuntimeConfig:
+    interval_seconds: int
+    vlm_error_cooldown_seconds: int
+    hls_enabled: bool
+    hls_max_consecutive_failures: int
+    hls_retry_backoff_seconds: int
+
+
 def get_db_path():
     return Path(
         os.getenv(
@@ -41,25 +51,42 @@ def get_camera_config_path():
     return Path(os.getenv("HIGHWAYVLM_CAMERA_CONFIG", str(CONFIG_DIR / "cameras.yaml")))
 
 
+def get_system_interval_seconds():
+    """
+    Single source of truth for all app cadence.
+    This drives both backend scan ticks and frontend auto-refresh timers.
+    """
+    return int(os.getenv("SYSTEM_INTERVAL_SECONDS", "30"))
+
+
 def get_run_interval_seconds():
-    return int(os.getenv("RUN_INTERVAL_SECONDS", "30"))
+    # Legacy alias; keeps older code paths working while using centralized cadence.
+    return get_system_interval_seconds()
 
 
 def get_snapshot_interval_seconds():
-    return int(os.getenv("SNAPSHOT_INTERVAL_SECONDS", "60"))
+    # Legacy alias; keeps older script loop behavior aligned to centralized cadence.
+    return get_system_interval_seconds()
 
 
 def get_vlm_interval_seconds():
-    return int(os.getenv("VLM_INTERVAL_SECONDS", "120"))
+    # Legacy alias; keeps older script loop behavior aligned to centralized cadence.
+    return get_system_interval_seconds()
+
+
+def get_dashboard_refresh_seconds():
+    # Legacy alias; UI now reads SYSTEM_INTERVAL_SECONDS from runtime settings API.
+    return get_system_interval_seconds()
+
+
+def get_debug_refresh_seconds():
+    # Legacy alias; UI now reads SYSTEM_INTERVAL_SECONDS from runtime settings API.
+    return get_system_interval_seconds()
 
 
 def get_min_vlm_interval_seconds():
-    return int(
-        os.getenv(
-            "MIN_VLM_INTERVAL_SECONDS",
-            os.getenv("VLM_FORCE_INTERVAL_SECONDS", "30"),
-        )
-    )
+    # Legacy alias retained for compatibility with legacy docs/debug terminology.
+    return get_system_interval_seconds()
 
 
 def get_request_timeout_seconds():
@@ -141,6 +168,11 @@ def get_hls_max_consecutive_failures():
     return int(os.getenv("HLS_MAX_CONSECUTIVE_FAILURES", "5"))
 
 
+def get_hls_retry_backoff_seconds():
+    # Reuse the same centralized cadence for HLS retry backoff.
+    return int(os.getenv("HLS_RETRY_BACKOFF_SECONDS", str(get_system_interval_seconds())))
+
+
 def get_motion_diff_threshold():
     return int(os.getenv("MOTION_DIFF_THRESHOLD", "30"))
 
@@ -154,7 +186,8 @@ def get_motion_low_threshold():
 
 
 def get_periodic_vlm_interval_seconds():
-    return int(os.getenv("PERIODIC_VLM_INTERVAL_SECONDS", "900"))
+    # Disabled in strict CV-first flow.
+    return 0
 
 
 def get_yolo_enabled():
@@ -191,3 +224,31 @@ def get_vlm_base_url():
         if values.get("VLM_BASE_URL"):
             return values["VLM_BASE_URL"]
     return os.getenv("OPENAI_BASE_URL", os.getenv("VLM_BASE_URL", "https://api.openai.com/v1"))
+
+
+def get_pipeline_runtime_config():
+    return PipelineRuntimeConfig(
+        interval_seconds=get_system_interval_seconds(),
+        vlm_error_cooldown_seconds=get_vlm_error_cooldown_seconds(),
+        hls_enabled=get_hls_enabled(),
+        hls_max_consecutive_failures=get_hls_max_consecutive_failures(),
+        hls_retry_backoff_seconds=get_hls_retry_backoff_seconds(),
+    )
+
+
+def get_runtime_settings_snapshot():
+    runtime = get_pipeline_runtime_config()
+    return {
+        "SYSTEM_INTERVAL_SECONDS": runtime.interval_seconds,
+        "VLM_ERROR_COOLDOWN_SECONDS": runtime.vlm_error_cooldown_seconds,
+        "HLS_ENABLED": runtime.hls_enabled,
+        "HLS_NUM_FRAMES": get_hls_num_frames(),
+        "HLS_FRAME_INTERVAL": get_hls_frame_interval(),
+        "HLS_TIMEOUT_SECONDS": get_hls_timeout_seconds(),
+        "HLS_MAX_CONSECUTIVE_FAILURES": runtime.hls_max_consecutive_failures,
+        "HLS_RETRY_BACKOFF_SECONDS": runtime.hls_retry_backoff_seconds,
+        "MOTION_DIFF_THRESHOLD": get_motion_diff_threshold(),
+        "MOTION_HIGH_THRESHOLD": get_motion_high_threshold(),
+        "MOTION_LOW_THRESHOLD": get_motion_low_threshold(),
+        "VLM_MODEL": get_vlm_model(),
+    }

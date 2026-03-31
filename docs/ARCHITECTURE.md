@@ -28,7 +28,7 @@ HighwayVLM is a single-process FastAPI application with an in-process background
   - Maintains per-camera in-memory state
   - Polls configured cameras
   - Deduplicates unchanged frames
-  - Applies VLM rate limits and cooldown logic
+  - Applies CV-first gating and cooldown/quota safeguards
   - Calls the VLM client
   - Persists all outcomes through `storage.insert_log()`
 
@@ -73,20 +73,23 @@ HighwayVLM is a single-process FastAPI application with an in-process background
 3. `_bootstrap()` initializes the database and syncs the camera catalog.
 4. `_start_worker()` launches `pipeline.run_loop()` in a daemon thread.
 5. The worker repeatedly calls `run_once(states, client)`.
-6. For each due camera:
+6. On each tick, all configured cameras are submitted concurrently:
    - fetch snapshot
    - hash bytes
    - save frame
-   - decide whether to skip or analyze
-   - if analyzed, call the VLM and persist the result
+   - run local CV gate
+   - if CV gates in, call the VLM and persist the result
 7. The frontend pages poll JSON endpoints for summaries and archive data.
 
 Cadence nuance:
 
-- camera poll intervals are configured per camera
-- the worker still handles cameras sequentially in one process
-- after each `run_once()` pass, the process sleeps for `RUN_INTERVAL_SECONDS`
-- actual per-camera spacing is therefore the configured target plus the time spent fetching and analyzing cameras in that loop
+- all cadence is controlled by one setting: `SYSTEM_INTERVAL_SECONDS`
+- the worker aligns sweeps to wall-clock cadence boundaries
+- the worker starts one concurrent sweep per tick
+- UI pages auto-refresh on the same interval value
+- the dashboard can remain visually live (stream playback) between analysis ticks
+
+See `docs/POLLING.md` for the detailed polling/refresh timing contract.
 
 ## Why The Worker Lives Inside The API Process
 

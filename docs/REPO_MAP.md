@@ -30,6 +30,8 @@
   - Full system reference.
 - `docs/API_REFERENCE.md`
   - Route reference.
+- `docs/POLLING.md`
+  - Central polling and refresh cadence reference.
 - `docs/ARCHITECTURE.md`
   - Architectural summary.
 - `docs/STRUCTURE.md`

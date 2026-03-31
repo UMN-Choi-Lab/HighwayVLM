@@ -8,6 +8,10 @@ const latestIncident = document.getElementById("latest-incident");
 const hourlyTotal = document.getElementById("hourly-total");
 const latestHour = document.getElementById("latest-hour");
 const subtitle = document.getElementById("page-subtitle");
+const DEFAULT_REFRESH_SECONDS = 30;
+let refreshSeconds = DEFAULT_REFRESH_SECONDS;
+let refreshTimer = null;
+let refreshStartTimeout = null;
 
 const query = new URLSearchParams(window.location.search);
 let initialCameraId = query.get("camera_id") || "";
@@ -218,13 +222,14 @@ const renderIncidents = (items) => {
         const resp = await fetch(`/api/incidents/${item.id}/false_alarm`, { method: "POST" });
         const data = await resp.json();
         if (data.false_alarm) {
-          falseAlarmBtn.textContent = "Marked as False Alarm";
-          falseAlarmBtn.classList.add("is-false-alarm");
-          card.classList.add("false-alarm");
+          // Default API excludes false alarms, so remove from current view immediately.
+          card.remove();
+          await refresh();
         } else {
           falseAlarmBtn.textContent = "False Alarm";
           falseAlarmBtn.classList.remove("is-false-alarm");
           card.classList.remove("false-alarm");
+          await refresh();
         }
       } catch (err) {
         alert("Failed to toggle: " + err);
@@ -292,8 +297,45 @@ const refresh = async () => {
 };
 
 const init = async () => {
+  refreshSeconds = await loadRuntimeRefreshSeconds();
   await loadFilters();
   await refresh();
+  scheduleAutoRefresh();
+};
+
+const loadRuntimeRefreshSeconds = async () => {
+  if (!window.HighwayVLMRuntime || typeof window.HighwayVLMRuntime.load !== "function") {
+    return DEFAULT_REFRESH_SECONDS;
+  }
+  const settings = await window.HighwayVLMRuntime.load();
+  const candidate = Number.parseInt(settings?.SYSTEM_INTERVAL_SECONDS, 10);
+  return Number.isFinite(candidate) && candidate > 0 ? candidate : DEFAULT_REFRESH_SECONDS;
+};
+
+const scheduleAutoRefresh = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (refreshStartTimeout) {
+    clearTimeout(refreshStartTimeout);
+    refreshStartTimeout = null;
+  }
+
+  // Align refreshes to wall-clock cadence boundaries so all pages refresh together.
+  const intervalMs = refreshSeconds * 1000;
+  const now = Date.now();
+  let delayMs = intervalMs - (now % intervalMs);
+  if (delayMs >= intervalMs) {
+    delayMs = 0;
+  }
+
+  refreshStartTimeout = setTimeout(() => {
+    refresh();
+    refreshTimer = setInterval(() => {
+      refresh();
+    }, intervalMs);
+  }, delayMs);
 };
 
 const clearBtn = document.getElementById("clear-btn");

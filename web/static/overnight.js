@@ -8,6 +8,10 @@ const hourlyTotal = document.getElementById("hourly-total");
 const reportTotal = document.getElementById("report-total");
 const cameraIncidentTotal = document.getElementById("camera-incident-total");
 const subtitle = document.getElementById("page-subtitle");
+const DEFAULT_REFRESH_SECONDS = 30;
+let refreshSeconds = DEFAULT_REFRESH_SECONDS;
+let refreshTimer = null;
+let refreshStartTimeout = null;
 
 const query = new URLSearchParams(window.location.search);
 let initialCameraId = query.get("camera_id") || "";
@@ -310,8 +314,45 @@ const refresh = async () => {
 };
 
 const init = async () => {
+  refreshSeconds = await loadRuntimeRefreshSeconds();
   await loadFilters();
   await refresh();
+  scheduleAutoRefresh();
+};
+
+const loadRuntimeRefreshSeconds = async () => {
+  if (!window.HighwayVLMRuntime || typeof window.HighwayVLMRuntime.load !== "function") {
+    return DEFAULT_REFRESH_SECONDS;
+  }
+  const settings = await window.HighwayVLMRuntime.load();
+  const candidate = Number.parseInt(settings?.SYSTEM_INTERVAL_SECONDS, 10);
+  return Number.isFinite(candidate) && candidate > 0 ? candidate : DEFAULT_REFRESH_SECONDS;
+};
+
+const scheduleAutoRefresh = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (refreshStartTimeout) {
+    clearTimeout(refreshStartTimeout);
+    refreshStartTimeout = null;
+  }
+
+  // Align refreshes to wall-clock cadence boundaries so all pages refresh together.
+  const intervalMs = refreshSeconds * 1000;
+  const now = Date.now();
+  let delayMs = intervalMs - (now % intervalMs);
+  if (delayMs >= intervalMs) {
+    delayMs = 0;
+  }
+
+  refreshStartTimeout = setTimeout(() => {
+    refresh();
+    refreshTimer = setInterval(() => {
+      refresh();
+    }, intervalMs);
+  }, delayMs);
 };
 
 const clearBtn = document.getElementById("clear-btn");

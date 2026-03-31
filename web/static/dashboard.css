@@ -427,6 +427,12 @@ body::before {
   font-size: 18px;
 }
 
+.stat .coordinates {
+  font-size: 14px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
 .stat small {
   display: block;
   margin-top: 6px;

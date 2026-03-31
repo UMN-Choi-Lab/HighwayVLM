@@ -36,9 +36,8 @@ This is the shortest practical map of the HighwayVLM codebase.
    - Directory: `highwayvlm/`
    - Purpose: centralized runtime configuration
    - Handles:
-     - `RUN_INTERVAL_SECONDS`
-     - `MIN_VLM_INTERVAL_SECONDS`
-     - `VLM_MAX_CALLS_PER_RUN`
+     - `SYSTEM_INTERVAL_SECONDS` (single cadence source)
+     - `VLM_ERROR_COOLDOWN_SECONDS`
      - timeouts
      - retries
      - model name
@@ -118,17 +117,18 @@ This is the shortest practical map of the HighwayVLM codebase.
 - Config source:
   - `highwayvlm/settings.py`
 - Main setting:
-  - `RUN_INTERVAL_SECONDS`
+  - `SYSTEM_INTERVAL_SECONDS`
 - Runtime execution:
   - `highwayvlm/pipeline.py`
   - `run_loop()`
+- Detailed doc:
+  - `docs/POLLING.md`
 
 ### VLM Throttling
 
 - File: `highwayvlm/settings.py`
 - Main settings:
-  - `MIN_VLM_INTERVAL_SECONDS`
-  - `VLM_MAX_CALLS_PER_RUN`
+  - `SYSTEM_INTERVAL_SECONDS`
   - `VLM_ERROR_COOLDOWN_SECONDS`
 
 ### Snapshot Fetching

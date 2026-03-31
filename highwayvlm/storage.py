@@ -378,8 +378,50 @@ def _parse_incidents(incidents_payload):
     return parsed if isinstance(parsed, list) else []
 
 
+_INVALID_INCIDENT_TYPES = {
+    "",
+    "none",
+    "no_incident",
+    "no incidents",
+    "clear",
+    "false_alarm",
+    "false_positive",
+    "normal_traffic",
+}
+
+_FALSE_ALARM_HINTS = (
+    "false alarm",
+    "false positive",
+    "no incident",
+    "no incidents",
+    "no active incident",
+    "clear traffic",
+    "normal traffic",
+)
+
+
+def _is_valid_incident(incident, base_notes=""):
+    if not isinstance(incident, dict):
+        return True
+    incident_type = str(incident.get("type") or "").strip().lower()
+    description = str(incident.get("description") or "").strip().lower()
+    if incident_type in _INVALID_INCIDENT_TYPES:
+        return False
+    if description and any(token in description for token in _FALSE_ALARM_HINTS):
+        return False
+    return True
+
+
+def _filter_valid_incidents(incidents, base_notes=""):
+    return [incident for incident in incidents if _is_valid_incident(incident, base_notes)]
+
+
 def _append_incident_log(log_entry):
-    incidents = _parse_incidents(log_entry.get("incidents_json"))
+    base_notes = (log_entry.get("notes") or "").strip()
+    incidents = _filter_valid_incidents(
+        _parse_incidents(log_entry.get("incidents_json")),
+        base_notes=base_notes,
+    )
     if not incidents:
         return
     payload = {
@@ -480,10 +522,13 @@ def _build_hourly_summary(log_entry, incidents):
 
 
 def _archive_incident_events(log_entry):
-    incidents = _parse_incidents(log_entry.get("incidents_json"))
+    base_notes = (log_entry.get("notes") or "").strip()
+    incidents = _filter_valid_incidents(
+        _parse_incidents(log_entry.get("incidents_json")),
+        base_notes=base_notes,
+    )
     if not incidents:
         return
-    base_notes = (log_entry.get("notes") or "").strip()
     with _connect() as conn:
         for incident in incidents:
             if isinstance(incident, dict):
@@ -553,7 +598,10 @@ def _archive_hourly_snapshot(log_entry):
     hour_bucket = _to_hour_bucket(log_entry)
     if not hour_bucket:
         return
-    incidents = _parse_incidents(log_entry.get("incidents_json"))
+    incidents = _filter_valid_incidents(
+        _parse_incidents(log_entry.get("incidents_json")),
+        base_notes=(log_entry.get("notes") or "").strip(),
+    )
     error = sanitize_error_message(log_entry.get("error"))
     skipped_reason = sanitize_error_message(log_entry.get("skipped_reason"))
     if error:
@@ -745,6 +793,20 @@ def clear_incidents(camera_id=None):
             )
         else:
             cursor = conn.execute("DELETE FROM incident_events")
+        return cursor.rowcount
+
+
+def clear_false_alarms(camera_id=None):
+    with _connect() as conn:
+        if camera_id:
+            cursor = conn.execute(
+                "DELETE FROM incident_events WHERE camera_id = ? AND false_alarm = 1",
+                (camera_id,),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM incident_events WHERE false_alarm = 1"
+            )
         return cursor.rowcount
 
 
@@ -1113,7 +1175,7 @@ def get_status_summary(cameras=None):
     return summary
 
 
-def list_incident_events(limit=200, camera_id=None):
+def list_incident_events(limit=200, camera_id=None, include_false_alarms=False):
     query = (
         "SELECT id, created_at, captured_at, camera_id, camera_name, corridor, direction, "
         "observed_direction, traffic_state, incident_type, severity, description, notes, "
@@ -1121,9 +1183,14 @@ def list_incident_events(limit=200, camera_id=None):
         "FROM incident_events"
     )
     params = []
+    where = []
     if camera_id:
-        query += " WHERE camera_id = ?"
+        where.append("camera_id = ?")
         params.append(camera_id)
+    if not include_false_alarms:
+        where.append("false_alarm = 0")
+    if where:
+        query += " WHERE " + " AND ".join(where)
     query += " ORDER BY created_at DESC, id DESC LIMIT ?"
     params.append(limit)
     with _connect() as conn:
@@ -1225,26 +1292,35 @@ def list_hourly_snapshots(limit=336, camera_id=None):
     return results
 
 
-def get_archive_overview(camera_id=None):
-    incidents_where = " WHERE camera_id = ?" if camera_id else ""
+def get_archive_overview(camera_id=None, include_false_alarms=False):
+    incident_clauses = []
+    incident_params = []
+    if camera_id:
+        incident_clauses.append("camera_id = ?")
+        incident_params.append(camera_id)
+    if not include_false_alarms:
+        incident_clauses.append("false_alarm = 0")
+    incidents_where = (
+        " WHERE " + " AND ".join(incident_clauses) if incident_clauses else ""
+    )
     hourly_where = " WHERE camera_id = ?" if camera_id else ""
-    params = [camera_id] if camera_id else []
+    hourly_params = [camera_id] if camera_id else []
     with _connect() as conn:
         incident_total = conn.execute(
             f"SELECT COUNT(*) FROM incident_events{incidents_where}",
-            params,
+            incident_params,
         ).fetchone()[0]
         hourly_total = conn.execute(
             f"SELECT COUNT(*) FROM hourly_snapshots{hourly_where}",
-            params,
+            hourly_params,
         ).fetchone()[0]
         latest_incident_at = conn.execute(
             f"SELECT MAX(created_at) FROM incident_events{incidents_where}",
-            params,
+            incident_params,
         ).fetchone()[0]
         latest_hourly_bucket = conn.execute(
             f"SELECT MAX(hour_bucket) FROM hourly_snapshots{hourly_where}",
-            params,
+            hourly_params,
         ).fetchone()[0]
     return {
         "camera_id": camera_id,

@@ -137,7 +137,10 @@ def should_call_vlm(
     if analysis.anomaly_detected:
         return True, f"anomaly_detected: {analysis.anomaly_reason}"
 
-    if last_vlm_call_age_seconds is None or last_vlm_call_age_seconds >= periodic_interval:
+    # Optional periodic heartbeat; set to 0 to run strict CV-first gating.
+    if periodic_interval > 0 and (
+        last_vlm_call_age_seconds is None or last_vlm_call_age_seconds >= periodic_interval
+    ):
         return True, "periodic_heartbeat"
 
     return False, "local_motion_normal"
