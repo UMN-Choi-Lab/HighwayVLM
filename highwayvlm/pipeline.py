@@ -9,6 +9,7 @@ from highwayvlm.config_loader import load_cameras
 from highwayvlm.ingest.fetcher import fetch_snapshot_bytes, save_snapshot
 from highwayvlm.ingest.annotate import save_annotated_image
 from highwayvlm.ingest.clip import save_incident_clip
+from highwayvlm.ingest.video_archive import schedule_hls_video_archive
 from highwayvlm.ingest.motion import analyze_motion, should_call_vlm
 from highwayvlm.ingest.stream import build_stream_url, extract_frames
 from highwayvlm.ingest.vehicle import get_detector
@@ -235,6 +236,21 @@ def _run_hls_branch(camera, state, client, base_log, captured_at, runtime):
     # HLS success — reset failure counter
     state.hls_consecutive_failures = 0
 
+    scheduled, schedule_reason = schedule_hls_video_archive(
+        camera,
+        stream_url,
+        captured_at,
+    )
+    if scheduled:
+        print(f"Video archive scheduled for {camera_id} at {captured_at}")
+    elif schedule_reason not in {
+        "disabled",
+        "camera_not_enabled",
+        "already_recording",
+        "slot_already_scheduled",
+    }:
+        print(f"Video archive not scheduled for {camera_id}: {schedule_reason}")
+
     # Save first frame as the representative snapshot
     first_frame = capture.frames[0]
     image_path = save_snapshot(camera_id, first_frame.image_bytes, first_frame.content_type, captured_at)
@@ -291,9 +307,8 @@ def _run_hls_branch(camera, state, client, base_log, captured_at, runtime):
         base_log["vlm_model"] = "local_motion"
         base_log["skipped_reason"] = "local_motion_normal"
         base_log["notes"] = (
-            f"Local analysis: changed_pixels={motion.changed_pixel_fraction:.4f}, "
-            f"brightness={motion.mean_brightness:.0f}, "
-            f"vehicle_count={vehicle.vehicle_count}"
+            "Local motion and vehicle checks looked normal, so this cycle stayed in CV mode "
+            "and did not escalate to VLM."
         )
         state.last_traffic_state = vehicle.traffic_state
         insert_log(base_log)
@@ -545,9 +560,8 @@ def _process_camera(camera, state, client, runtime):
         base_log["vlm_model"] = "local_cv"
         base_log["skipped_reason"] = "local_motion_normal" if reason == "local_motion_normal" else reason
         base_log["notes"] = (
-            f"Local CV analysis: changed_pixels={motion.changed_pixel_fraction:.4f}, "
-            f"brightness={motion.mean_brightness:.0f}, "
-            f"vehicle_count={vehicle.vehicle_count}"
+            "Local motion and vehicle checks looked normal, so this cycle stayed in CV mode "
+            "and did not escalate to VLM."
         )
         state.last_traffic_state = vehicle.traffic_state
         insert_log(base_log)

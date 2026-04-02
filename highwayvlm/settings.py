@@ -173,6 +173,43 @@ def get_hls_retry_backoff_seconds():
     return int(os.getenv("HLS_RETRY_BACKOFF_SECONDS", str(get_system_interval_seconds())))
 
 
+def get_video_archive_enabled():
+    return os.getenv("VIDEO_ARCHIVE_ENABLED", "true").lower() in ("true", "1", "yes")
+
+
+def get_video_archive_align_to_hour():
+    return os.getenv("VIDEO_ARCHIVE_ALIGN_TO_HOUR", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+
+def get_video_archive_timezone():
+    return os.getenv("VIDEO_ARCHIVE_TIMEZONE", "America/Chicago")
+
+
+def get_video_archive_root():
+    return Path(os.getenv("VIDEO_ARCHIVE_ROOT", "/data2/HighwayVLM"))
+
+
+def get_video_archive_duration_seconds():
+    return int(
+        os.getenv("VIDEO_ARCHIVE_DURATION_SECONDS", "3600")
+    )
+
+
+def get_video_archive_max_workers():
+    return int(os.getenv("VIDEO_ARCHIVE_MAX_WORKERS", "8"))
+
+
+def get_video_archive_camera_ids():
+    raw = os.getenv("VIDEO_ARCHIVE_CAMERA_IDS", "")
+    if not raw.strip():
+        return set()
+    return {camera_id.strip() for camera_id in raw.split(",") if camera_id.strip()}
+
+
 def get_motion_diff_threshold():
     return int(os.getenv("MOTION_DIFF_THRESHOLD", "30"))
 
@@ -251,4 +288,10 @@ def get_runtime_settings_snapshot():
         "MOTION_HIGH_THRESHOLD": get_motion_high_threshold(),
         "MOTION_LOW_THRESHOLD": get_motion_low_threshold(),
         "VLM_MODEL": get_vlm_model(),
+        "VIDEO_ARCHIVE_ENABLED": get_video_archive_enabled(),
+        "VIDEO_ARCHIVE_ALIGN_TO_HOUR": get_video_archive_align_to_hour(),
+        "VIDEO_ARCHIVE_TIMEZONE": get_video_archive_timezone(),
+        "VIDEO_ARCHIVE_ROOT": str(get_video_archive_root()),
+        "VIDEO_ARCHIVE_DURATION_SECONDS": get_video_archive_duration_seconds(),
+        "VIDEO_ARCHIVE_CAMERA_IDS": sorted(get_video_archive_camera_ids()),
     }

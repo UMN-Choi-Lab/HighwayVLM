@@ -103,6 +103,13 @@ HTML endpoints:
 - `VLM_MODEL`
 - `SYSTEM_INTERVAL_SECONDS`
 - `VLM_ERROR_COOLDOWN_SECONDS`
+- `VIDEO_ARCHIVE_ENABLED`
+- `VIDEO_ARCHIVE_ALIGN_TO_HOUR`
+- `VIDEO_ARCHIVE_TIMEZONE`
+- `VIDEO_ARCHIVE_ROOT`
+- `VIDEO_ARCHIVE_DURATION_SECONDS` (`3600` for 1-hour clips)
+- `VIDEO_ARCHIVE_CAMERA_IDS`
+- `VIDEO_ARCHIVE_HOST_PATH` (server compose mount)
 
 ## Runtime Outputs
 
@@ -110,6 +117,7 @@ HTML endpoints:
 - `data/frames/live/...`: saved frames
 - `data/raw_vlm_outputs/*.json`: raw VLM responses
 - `logs/incidents.jsonl`: incident log
+- `/data2/HighwayVLM/...`: archived HLS video segments + per-clip JSON metadata + manifest JSONL
 
 ## Folders
 
