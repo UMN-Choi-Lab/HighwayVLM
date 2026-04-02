@@ -1,6 +1,6 @@
 # HighwayVLM
 
-HighwayVLM is a FastAPI app that polls freeway camera snapshots, sends frames to an OpenAI-compatible vision model, stores structured traffic results in SQLite, and serves a simple dashboard plus archive views.
+HighwayVLM is a transportation safety app that polls freeway camera snapshots, sends frames to an OpenAI-compatible vision model, stores structured traffic results in SQLite, and serves a simple dashboard plus archive views. 
 
 ## Current State
 
