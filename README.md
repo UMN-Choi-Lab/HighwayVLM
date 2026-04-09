@@ -14,6 +14,26 @@ HighwayVLM is a FastAPI app that polls freeway camera snapshots, sends frames to
   - `/redoc`
   - `/openapi.json`
 
+## Screenshots
+
+### Dashboard - I-94 Corridor Watch
+![Dashboard - I-94 Corridor Watch](docs/screenshots/dashboard-corridor-watch.png)
+
+### Incidents Archive
+![Incidents Archive](docs/screenshots/incidents-archive.png)
+
+### Hourly Checks
+![Hourly Checks](docs/screenshots/hourly-checks.png)
+
+### Overnight Monitor
+![Overnight Monitor](docs/screenshots/overnight-monitor.png)
+
+### Pipeline Debug
+![Pipeline Debug](docs/screenshots/pipeline-debug.png)
+
+### Additional Screenshot
+![Breadth-first Traversal Screenshot](docs/screenshots/bfs-reference.png)
+
 ## What The App Does
 
 1. Loads camera definitions from `config/cameras.yaml`.
