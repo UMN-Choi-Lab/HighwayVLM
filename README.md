@@ -22,17 +22,11 @@ HighwayVLM is a transportation safety app that polls freeway camera snapshots, s
 ### Incidents Archive
 ![Incidents Archive](docs/screenshots/incidents-archive.png)
 
-### Hourly Checks
-![Hourly Checks](docs/screenshots/hourly-checks.png)
-
 ### Overnight Monitor
 ![Overnight Monitor](docs/screenshots/overnight-monitor.png)
 
 ### Pipeline Debug
 ![Pipeline Debug](docs/screenshots/pipeline-debug.png)
-
-### Additional Screenshot
-![Breadth-first Traversal Screenshot](docs/screenshots/bfs-reference.png)
 
 ## What The App Does
 
