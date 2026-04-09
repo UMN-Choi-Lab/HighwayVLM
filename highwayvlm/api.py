@@ -1,3 +1,4 @@
+import os
 import threading
 from pathlib import Path
 from typing import Optional
@@ -62,7 +63,14 @@ def _start_worker():
 @app.on_event("startup")
 def startup():
     _bootstrap()
-    _start_worker()
+    worker_disabled = os.getenv("HIGHWAYVLM_DISABLE_WORKER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not worker_disabled:
+        _start_worker()
 
 
 @app.get("/", response_class=HTMLResponse)
