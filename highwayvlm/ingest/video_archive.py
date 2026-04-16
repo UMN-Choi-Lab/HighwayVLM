@@ -217,11 +217,26 @@ def _run_command(command: list[str], timeout_seconds: int) -> tuple[bool, str]:
     return False, error_text[:400]
 
 
-def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, str]:
+def _assess_output(destination: Path, duration_seconds: int) -> dict:
+    assessment = {
+        "usable": False,
+        "quality": "unusable",
+        "issues": [],
+        "size_bytes": 0,
+        "probe_available": True,
+        "format_name": None,
+        "video_codecs": [],
+        "audio_codecs": [],
+        "actual_duration_seconds": None,
+    }
     if not destination.exists():
-        return False, "output_missing"
-    if destination.stat().st_size < 1024:
-        return False, "output_too_small"
+        assessment["issues"].append("output_missing")
+        return assessment
+
+    assessment["size_bytes"] = destination.stat().st_size
+    if assessment["size_bytes"] < 1024:
+        assessment["issues"].append("output_too_small")
+        return assessment
 
     probe_cmd = [
         "ffprobe",
@@ -243,59 +258,96 @@ def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, st
             timeout=30,
         )
     except FileNotFoundError:
-        # Keep archive quality strict: ffprobe must be present for post-write validation.
-        return False, "ffprobe_missing"
+        # Keep any non-empty file when ffprobe is unavailable; mark as partial.
+        assessment["probe_available"] = False
+        assessment["usable"] = True
+        assessment["quality"] = "partial"
+        assessment["issues"].append("ffprobe_missing")
+        return assessment
     except subprocess.TimeoutExpired:
-        return False, "ffprobe_timeout"
+        assessment["usable"] = True
+        assessment["quality"] = "partial"
+        assessment["issues"].append("ffprobe_timeout")
+        return assessment
     except Exception as exc:
-        return False, f"ffprobe_exception:{exc}"
+        assessment["usable"] = True
+        assessment["quality"] = "partial"
+        assessment["issues"].append(f"ffprobe_exception:{exc}")
+        return assessment
 
     if result.returncode != 0:
         error_text = (result.stderr or result.stdout or "ffprobe_failed").strip()
-        return False, error_text[:200]
+        assessment["usable"] = True
+        assessment["quality"] = "partial"
+        assessment["issues"].append(f"ffprobe_failed:{error_text[:200]}")
+        return assessment
 
     try:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
-        return False, "ffprobe_invalid_json"
+        assessment["usable"] = True
+        assessment["quality"] = "partial"
+        assessment["issues"].append("ffprobe_invalid_json")
+        return assessment
 
     streams = payload.get("streams") or []
     if not streams:
-        return False, "no_video_stream"
-    video_codecs = [
+        assessment["issues"].append("no_video_stream")
+        return assessment
+
+    assessment["video_codecs"] = [
         str(stream.get("codec_name") or "").lower()
         for stream in streams
         if str(stream.get("codec_type") or "").lower() == "video"
     ]
-    audio_codecs = [
+    assessment["audio_codecs"] = [
         str(stream.get("codec_name") or "").lower()
         for stream in streams
         if str(stream.get("codec_type") or "").lower() == "audio"
     ]
-    if not video_codecs:
-        return False, "no_video_stream"
-    if "h264" not in video_codecs:
-        return False, f"unsupported_video_codec:{','.join(video_codecs)}"
-    if audio_codecs and "aac" not in audio_codecs:
-        return False, f"unsupported_audio_codec:{','.join(audio_codecs)}"
+    if not assessment["video_codecs"]:
+        assessment["issues"].append("no_video_stream")
+        return assessment
 
-    format_name = str((payload.get("format") or {}).get("format_name") or "").lower()
-    if "mp4" not in format_name:
-        return False, f"unsupported_container:{format_name or 'unknown'}"
+    assessment["format_name"] = str(
+        (payload.get("format") or {}).get("format_name") or ""
+    ).lower()
+    if "h264" not in assessment["video_codecs"]:
+        assessment["issues"].append(
+            f"unsupported_video_codec:{','.join(assessment['video_codecs'])}"
+        )
+    if assessment["audio_codecs"] and "aac" not in assessment["audio_codecs"]:
+        assessment["issues"].append(
+            f"unsupported_audio_codec:{','.join(assessment['audio_codecs'])}"
+        )
+    if "mp4" not in assessment["format_name"]:
+        assessment["issues"].append(
+            f"unsupported_container:{assessment['format_name'] or 'unknown'}"
+        )
 
     duration_raw = (payload.get("format") or {}).get("duration")
     try:
-        actual_duration = float(duration_raw)
+        assessment["actual_duration_seconds"] = float(duration_raw)
     except (TypeError, ValueError):
-        return False, "duration_unavailable"
+        assessment["issues"].append("duration_unavailable")
 
-    min_expected = max(5.0, float(duration_seconds) * 0.95)
-    if actual_duration < min_expected:
-        return False, f"duration_too_short:{actual_duration:.2f}s"
-    return True, ""
+    if assessment["actual_duration_seconds"] is not None:
+        min_expected = max(5.0, float(duration_seconds) * 0.95)
+        if assessment["actual_duration_seconds"] < min_expected:
+            assessment["issues"].append(
+                f"duration_too_short:{assessment['actual_duration_seconds']:.2f}s"
+            )
+
+    assessment["usable"] = True
+    assessment["quality"] = "complete" if not assessment["issues"] else "partial"
+    return assessment
 
 
-def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tuple[bool, str]:
+def _run_ffmpeg(
+    stream_url: str,
+    destination: Path,
+    duration_seconds: int,
+) -> tuple[bool, str, dict]:
     timeout_seconds = max(
         duration_seconds + get_hls_timeout_seconds() + 120,
         int(duration_seconds * 4),
@@ -307,7 +359,19 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
         "-loglevel",
         "error",
         "-fflags",
-        "+genpts",
+        "+genpts+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_at_eof",
+        "1",
+        "-reconnect_delay_max",
+        "2",
+        "-rw_timeout",
+        str(max(10, get_hls_timeout_seconds()) * 1_000_000),
         "-i",
         stream_url,
         "-f",
@@ -344,21 +408,20 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
         "2",
         "-movflags",
         "+faststart",
-        "-shortest",
         str(destination),
     ]
     encode_ok, encode_error = _run_command(encode_cmd, timeout_seconds)
-    if encode_ok:
-        valid, validation_error = _validate_output(destination, duration_seconds)
-        if valid:
-            return True, ""
-        encode_error = f"encode_invalid:{validation_error}"
-        _cleanup_output(destination)
-    else:
-        _cleanup_output(destination)
+    assessment = _assess_output(destination, duration_seconds)
+    if assessment["usable"]:
+        if not encode_ok:
+            assessment["quality"] = "partial"
+            if encode_error:
+                assessment["issues"].append(f"ffmpeg_exit_nonzero:{encode_error}")
+        return True, "", assessment
 
-    error_text = encode_error if encode_error else "unknown_ffmpeg_failure"
-    return False, error_text[:400]
+    _cleanup_output(destination)
+    error_text = encode_error if encode_error else "no_usable_output"
+    return False, error_text[:400], assessment
 
 
 def _append_manifest(root: Path, payload: dict) -> None:
@@ -378,13 +441,21 @@ def _record_segment(
     duration_seconds = segment_plan["duration_seconds"]
 
     video_path.parent.mkdir(parents=True, exist_ok=True)
-    ok, error_text = _run_ffmpeg(stream_url, video_path, duration_seconds)
+    ok, error_text, assessment = _run_ffmpeg(stream_url, video_path, duration_seconds)
     if not ok:
         raise RuntimeError(
             f"video_archive_failed camera={camera.get('camera_id')} duration={duration_seconds}s error={error_text}"
         )
 
     metadata["duration_seconds"] = duration_seconds
+    metadata["actual_duration_seconds"] = assessment.get("actual_duration_seconds")
+    metadata["archive_quality"] = assessment.get("quality", "unknown")
+    metadata["archive_issues"] = assessment.get("issues") or []
+    metadata["ffprobe_available"] = assessment.get("probe_available", False)
+    metadata["file_size_bytes"] = assessment.get("size_bytes")
+    metadata["video_codecs"] = assessment.get("video_codecs") or []
+    metadata["audio_codecs"] = assessment.get("audio_codecs") or []
+    metadata["format_name"] = assessment.get("format_name")
     metadata["saved_at"] = datetime.now(timezone.utc).isoformat()
     metadata["stream_url"] = stream_url
 
@@ -404,9 +475,12 @@ def _on_done(camera_id: str, slot_id: str, future: Future) -> None:
             _ACTIVE_RECORDINGS.pop(camera_id, None)
     try:
         payload = future.result()
+        quality = payload.get("archive_quality", "unknown")
+        actual = payload.get("actual_duration_seconds")
+        actual_str = f"{float(actual):.2f}s" if isinstance(actual, (int, float)) else "n/a"
         print(
             f"Video archive saved for {camera_id}: {payload.get('video_path')} "
-            f"(duration={payload.get('duration_seconds')}s)"
+            f"(target={payload.get('duration_seconds')}s actual={actual_str} quality={quality})"
         )
     except Exception as exc:
         failed = True
