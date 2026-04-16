@@ -227,12 +227,10 @@ def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, st
         "ffprobe",
         "-v",
         "error",
-        "-select_streams",
-        "v:0",
         "-show_entries",
-        "stream=codec_name",
+        "stream=index,codec_type,codec_name",
         "-show_entries",
-        "format=duration",
+        "format=duration,format_name",
         "-of",
         "json",
         str(destination),
@@ -245,8 +243,8 @@ def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, st
             timeout=30,
         )
     except FileNotFoundError:
-        # ffprobe is optional; keep files when ffmpeg succeeded and size looks sane.
-        return True, ""
+        # Keep archive quality strict: ffprobe must be present for post-write validation.
+        return False, "ffprobe_missing"
     except subprocess.TimeoutExpired:
         return False, "ffprobe_timeout"
     except Exception as exc:
@@ -264,6 +262,26 @@ def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, st
     streams = payload.get("streams") or []
     if not streams:
         return False, "no_video_stream"
+    video_codecs = [
+        str(stream.get("codec_name") or "").lower()
+        for stream in streams
+        if str(stream.get("codec_type") or "").lower() == "video"
+    ]
+    audio_codecs = [
+        str(stream.get("codec_name") or "").lower()
+        for stream in streams
+        if str(stream.get("codec_type") or "").lower() == "audio"
+    ]
+    if not video_codecs:
+        return False, "no_video_stream"
+    if "h264" not in video_codecs:
+        return False, f"unsupported_video_codec:{','.join(video_codecs)}"
+    if audio_codecs and "aac" not in audio_codecs:
+        return False, f"unsupported_audio_codec:{','.join(audio_codecs)}"
+
+    format_name = str((payload.get("format") or {}).get("format_name") or "").lower()
+    if "mp4" not in format_name:
+        return False, f"unsupported_container:{format_name or 'unknown'}"
 
     duration_raw = (payload.get("format") or {}).get("duration")
     try:
@@ -271,7 +289,7 @@ def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, st
     except (TypeError, ValueError):
         return False, "duration_unavailable"
 
-    min_expected = max(5.0, float(duration_seconds) * 0.9)
+    min_expected = max(5.0, float(duration_seconds) * 0.95)
     if actual_duration < min_expected:
         return False, f"duration_too_short:{actual_duration:.2f}s"
     return True, ""
@@ -283,40 +301,6 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
         int(duration_seconds * 4),
         600,
     )
-    copy_cmd = [
-        "ffmpeg",
-        "-y",
-        "-loglevel",
-        "error",
-        "-fflags",
-        "+genpts",
-        "-i",
-        stream_url,
-        "-t",
-        str(duration_seconds),
-        "-map",
-        "0:v:0",
-        "-an",
-        "-sn",
-        "-dn",
-        "-c:v",
-        "copy",
-        "-avoid_negative_ts",
-        "make_zero",
-        "-movflags",
-        "+faststart",
-        str(destination),
-    ]
-    copy_ok, copy_error = _run_command(copy_cmd, timeout_seconds)
-    if copy_ok:
-        valid, validation_error = _validate_output(destination, duration_seconds)
-        if valid:
-            return True, ""
-        copy_error = f"stream_copy_invalid:{validation_error}"
-        _cleanup_output(destination)
-    else:
-        _cleanup_output(destination)
-
     encode_cmd = [
         "ffmpeg",
         "-y",
@@ -326,11 +310,16 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
         "+genpts",
         "-i",
         stream_url,
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
         "-t",
         str(duration_seconds),
         "-map",
         "0:v:0",
-        "-an",
+        "-map",
+        "1:a:0",
         "-sn",
         "-dn",
         "-c:v",
@@ -341,8 +330,21 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
         "23",
         "-pix_fmt",
         "yuv420p",
+        "-profile:v",
+        "high",
+        "-level",
+        "4.1",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
         "-movflags",
         "+faststart",
+        "-shortest",
         str(destination),
     ]
     encode_ok, encode_error = _run_command(encode_cmd, timeout_seconds)
@@ -355,8 +357,7 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
     else:
         _cleanup_output(destination)
 
-    error_parts = [part for part in (copy_error, encode_error) if part]
-    error_text = "; ".join(error_parts) if error_parts else "unknown_ffmpeg_failure"
+    error_text = encode_error if encode_error else "unknown_ffmpeg_failure"
     return False, error_text[:400]
 
 
