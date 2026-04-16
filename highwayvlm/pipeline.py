@@ -248,6 +248,7 @@ def _run_hls_branch(camera, state, client, base_log, captured_at, runtime):
         "camera_not_enabled",
         "already_recording",
         "slot_already_scheduled",
+        "waiting_for_hour_window",
     }:
         print(f"Video archive not scheduled for {camera_id}: {schedule_reason}")
 

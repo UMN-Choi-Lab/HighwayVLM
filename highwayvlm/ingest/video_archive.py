@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from highwayvlm.settings import (
     get_hls_timeout_seconds,
+    get_system_interval_seconds,
     get_video_archive_align_to_hour,
     get_video_archive_camera_ids,
     get_video_archive_duration_seconds,
@@ -27,6 +28,11 @@ _ARCHIVE_EXECUTOR: ThreadPoolExecutor | None = None
 _ACTIVE_RECORDINGS: dict[str, Future] = {}
 _SCHEDULED_SLOTS: dict[str, str] = {}
 _TIMEZONE_OBJ = None
+
+
+def _aligned_start_window_seconds() -> int:
+    # Keep this window wide enough to absorb scheduler jitter around HH:00.
+    return max(60, get_system_interval_seconds() * 4)
 
 
 def _slugify(value: str | None, fallback: str) -> str:
@@ -79,21 +85,21 @@ def _build_segment_plan(captured_at: str | None) -> dict:
     timezone_name = getattr(tz, "key", str(tz))
     now_local = now_utc.astimezone(tz)
     align_to_hour = get_video_archive_align_to_hour()
+    configured_duration = max(5, get_video_archive_duration_seconds())
 
     if align_to_hour:
         slot_start_local = now_local.replace(minute=0, second=0, microsecond=0)
-        slot_end_local = slot_start_local + timedelta(hours=1)
+        slot_end_local = slot_start_local + timedelta(seconds=configured_duration)
         slot_start_utc = slot_start_local.astimezone(timezone.utc)
         slot_end_utc = slot_end_local.astimezone(timezone.utc)
-        remaining = int((slot_end_utc - now_utc).total_seconds())
-        duration_seconds = max(5, min(remaining, 3600))
+        duration_seconds = configured_duration
         slot_id = slot_start_local.strftime("%Y%m%dT%H00")
         slot_label = (
             f"{slot_start_local.strftime('%Y-%m-%d %H:%M')} to "
             f"{slot_end_local.strftime('%H:%M')} {slot_start_local.tzname() or timezone_name}"
         )
     else:
-        duration_seconds = max(5, get_video_archive_duration_seconds())
+        duration_seconds = configured_duration
         slot_start_utc = now_utc
         slot_end_utc = now_utc + timedelta(seconds=duration_seconds)
         slot_start_local = slot_start_utc.astimezone(tz)
@@ -182,46 +188,151 @@ def _archive_paths(
     return video_path, metadata_path, metadata
 
 
+def _cleanup_output(destination: Path) -> None:
+    try:
+        if destination.exists():
+            destination.unlink()
+    except Exception:
+        pass
+
+
+def _run_command(command: list[str], timeout_seconds: int) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        return False, str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"command_timeout_after_{timeout_seconds}s"
+    except Exception as exc:
+        return False, str(exc)
+
+    if result.returncode == 0:
+        return True, ""
+    error_text = (result.stderr or result.stdout or f"exit_code_{result.returncode}").strip()
+    return False, error_text[:400]
+
+
+def _validate_output(destination: Path, duration_seconds: int) -> tuple[bool, str]:
+    if not destination.exists():
+        return False, "output_missing"
+    if destination.stat().st_size < 1024:
+        return False, "output_too_small"
+
+    probe_cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        str(destination),
+    ]
+    try:
+        result = subprocess.run(
+            probe_cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        # ffprobe is optional; keep files when ffmpeg succeeded and size looks sane.
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, "ffprobe_timeout"
+    except Exception as exc:
+        return False, f"ffprobe_exception:{exc}"
+
+    if result.returncode != 0:
+        error_text = (result.stderr or result.stdout or "ffprobe_failed").strip()
+        return False, error_text[:200]
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "ffprobe_invalid_json"
+
+    streams = payload.get("streams") or []
+    if not streams:
+        return False, "no_video_stream"
+
+    duration_raw = (payload.get("format") or {}).get("duration")
+    try:
+        actual_duration = float(duration_raw)
+    except (TypeError, ValueError):
+        return False, "duration_unavailable"
+
+    min_expected = max(5.0, float(duration_seconds) * 0.9)
+    if actual_duration < min_expected:
+        return False, f"duration_too_short:{actual_duration:.2f}s"
+    return True, ""
+
+
 def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tuple[bool, str]:
     timeout_seconds = max(
-        duration_seconds + get_hls_timeout_seconds() + 20,
-        duration_seconds + 30,
+        duration_seconds + get_hls_timeout_seconds() + 120,
+        int(duration_seconds * 4),
+        600,
     )
     copy_cmd = [
         "ffmpeg",
         "-y",
         "-loglevel",
         "error",
+        "-fflags",
+        "+genpts",
         "-i",
         stream_url,
         "-t",
         str(duration_seconds),
+        "-map",
+        "0:v:0",
         "-an",
+        "-sn",
+        "-dn",
         "-c:v",
         "copy",
+        "-avoid_negative_ts",
+        "make_zero",
         "-movflags",
         "+faststart",
         str(destination),
     ]
-    copy_result = subprocess.run(
-        copy_cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-    )
-    if copy_result.returncode == 0 and destination.exists():
-        return True, ""
+    copy_ok, copy_error = _run_command(copy_cmd, timeout_seconds)
+    if copy_ok:
+        valid, validation_error = _validate_output(destination, duration_seconds)
+        if valid:
+            return True, ""
+        copy_error = f"stream_copy_invalid:{validation_error}"
+        _cleanup_output(destination)
+    else:
+        _cleanup_output(destination)
 
     encode_cmd = [
         "ffmpeg",
         "-y",
         "-loglevel",
         "error",
+        "-fflags",
+        "+genpts",
         "-i",
         stream_url,
         "-t",
         str(duration_seconds),
+        "-map",
+        "0:v:0",
         "-an",
+        "-sn",
+        "-dn",
         "-c:v",
         "libx264",
         "-preset",
@@ -234,16 +345,18 @@ def _run_ffmpeg(stream_url: str, destination: Path, duration_seconds: int) -> tu
         "+faststart",
         str(destination),
     ]
-    encode_result = subprocess.run(
-        encode_cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-    )
-    if encode_result.returncode == 0 and destination.exists():
-        return True, ""
+    encode_ok, encode_error = _run_command(encode_cmd, timeout_seconds)
+    if encode_ok:
+        valid, validation_error = _validate_output(destination, duration_seconds)
+        if valid:
+            return True, ""
+        encode_error = f"encode_invalid:{validation_error}"
+        _cleanup_output(destination)
+    else:
+        _cleanup_output(destination)
 
-    error_text = (encode_result.stderr or copy_result.stderr or "").strip()
+    error_parts = [part for part in (copy_error, encode_error) if part]
+    error_text = "; ".join(error_parts) if error_parts else "unknown_ffmpeg_failure"
     return False, error_text[:400]
 
 
@@ -313,6 +426,12 @@ def schedule_hls_video_archive(camera: dict, stream_url: str, captured_at: str |
     if not _is_camera_enabled(camera_id):
         return False, "camera_not_enabled"
     segment_plan = _build_segment_plan(captured_at)
+    if segment_plan["align_to_hour"]:
+        now_local = _parse_captured_at(captured_at).astimezone(_resolve_timezone())
+        slot_start_local = segment_plan["slot_start_local"]
+        seconds_into_slot = (now_local - slot_start_local).total_seconds()
+        if seconds_into_slot < 0 or seconds_into_slot > _aligned_start_window_seconds():
+            return False, "waiting_for_hour_window"
     slot_id = segment_plan["slot_id"]
 
     with _ARCHIVE_LOCK:
