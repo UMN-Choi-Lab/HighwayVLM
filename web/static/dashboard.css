@@ -146,6 +146,11 @@ body::before {
   border: 1px solid var(--card-border);
   backdrop-filter: blur(10px);
   min-width: 140px;
+  transition: border-color 0.25s ease;
+}
+
+.stat-card:hover {
+  border-color: rgba(88, 166, 255, 0.4);
 }
 
 .stat-card span {
@@ -240,6 +245,13 @@ body::before {
   border: 1px solid var(--card-border);
   backdrop-filter: blur(12px);
   animation: float-in 0.6s ease both;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.camera-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 26px 40px var(--shadow);
+  border-color: rgba(88, 166, 255, 0.32);
 }
 
 .camera-head {
