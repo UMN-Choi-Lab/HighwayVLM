@@ -100,6 +100,19 @@ def _seconds_since(value):
     return (_utc_now() - value).total_seconds()
 
 
+def _decide_vlm_call(motion, state, stopped_vehicles):
+    call_vlm, reason = should_call_vlm(
+        motion,
+        _seconds_since(state.last_vlm_call_at),
+        periodic_interval=0,
+    )
+    if not call_vlm and state.pending_incident is not None:
+        return True, "pending_incident_confirmation"
+    if not call_vlm and stopped_vehicles:
+        return True, "stopped_vehicle_detected"
+    return call_vlm, reason
+
+
 def _read_file_bytes(path):
     if not path:
         return None
@@ -292,13 +305,7 @@ def _run_hls_branch(camera, state, client, base_log, captured_at, runtime):
     )
 
     # Decision gate: should we call VLM?
-    vlm_age = _seconds_since(state.last_vlm_call_at)
-    call_vlm, reason = should_call_vlm(motion, vlm_age, periodic_interval=0)
-
-    # Also call VLM if we have a pending incident to confirm
-    if not call_vlm and state.pending_incident is not None:
-        call_vlm = True
-        reason = "pending_incident_confirmation"
+    call_vlm, reason = _decide_vlm_call(motion, state, stopped_vehicles)
 
     base_log["vlm_call_reason"] = reason
 
@@ -547,12 +554,7 @@ def _process_camera(camera, state, client, runtime):
     base_log["anomaly_reason"] = motion.anomaly_reason
     state.last_motion_score = motion.changed_pixel_fraction
 
-    vlm_age = _seconds_since(state.last_vlm_call_at)
-    call_vlm, reason = should_call_vlm(motion, vlm_age, periodic_interval=0)
-
-    if not call_vlm and state.pending_incident is not None:
-        call_vlm = True
-        reason = "pending_incident_confirmation"
+    call_vlm, reason = _decide_vlm_call(motion, state, stopped_vehicles)
 
     base_log["vlm_call_reason"] = reason
 
